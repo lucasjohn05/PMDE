@@ -14,7 +14,7 @@ import (
 
 const wsURL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-const subscribeMsg = `{"assets_ids":["97186030785608128217926542396950266594898339988989015155120280107165449433603"],"type":"market"}`
+const subscribeMsg = `{"assets_ids":["63842529068710005716169325380315470359047749786610778647370693404952498013178"],"type":"market"}`
 
 func main() {
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
