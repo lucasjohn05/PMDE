@@ -1,3 +1,5 @@
 *.pem
 *.key
 .env
+pmde.exe
+*.exe
