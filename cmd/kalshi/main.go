@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/lucasjohn05/pmde/internal/kalshi"
 )
 
 const wsURL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -98,12 +100,32 @@ func main() {
 		log.Fatalf("subscribe write error: %v", err)
 	}
 
+	var feed kalshi.Feed
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Printf("read error: %v\n", err)
 			return
 		}
-		fmt.Println(string(msg))
+
+		wasStale := feed.Stale()
+		changed, err := feed.Handle(msg)
+		if err != nil {
+			log.Printf("kalshi: %v", err)
+		}
+		switch {
+		case !wasStale && feed.Stale():
+			log.Printf("kalshi: book stale, ignoring deltas until a new snapshot")
+		case wasStale && !feed.Stale():
+			log.Printf("kalshi: book synced from snapshot (seq %d)", feed.Book().LastSeq())
+		}
+		if changed {
+			bid, ask, ok := feed.Best()
+			if ok {
+				log.Printf("kalshi: best yes: bid=%d ask=%d bps", bid, ask)
+			} else {
+				log.Printf("kalshi: best yes: none")
+			}
+		}
 	}
 }

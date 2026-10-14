@@ -16,18 +16,28 @@ continuously.
 
 ## Status
 
-Both venue clients connect over WebSocket and dump raw messages to stdout
-(`cmd/kalshi`, `cmd/polymarket`); Kalshi's additionally authenticates with a
-signed request. Order book state is implemented and tested separately, in
-`internal/kalshi` and `internal/polymarket`, and verified against captured
-fixtures in `testdata/` — including, for Polymarket, cross-checking the
-derived book against the venue's own reported best bid/ask.
+Both venue clients connect over WebSocket (Kalshi's with a signed
+request), build a live order book from the feed, and log the best bid/ask
+in basis points whenever it changes — not on every message.
 
-That book code is not wired into the running clients yet. `cmd/kalshi` and
-`cmd/polymarket` still just print whatever JSON arrives; they don't build a
-`Book` from it. There is no `Tick` struct, no shared representation between
-the two venues, no venue-pair config, no divergence calculation, no
-storage, and no metrics. None of that exists yet.
+Each venue package has a `Feed` that sits between the raw messages and the
+`Book`: it dispatches by message type, decides whether the book can be
+trusted, and reports top-of-book changes. Book and feed are tested against
+the captured fixtures in `testdata/`, including, for Polymarket,
+cross-checking the derived book against the venue's own reported best
+bid/ask.
+
+A book is **stale** (untrusted, no best reported) until its first full
+snapshot — Kalshi's `orderbook_snapshot`, Polymarket's `book` event — and
+becomes stale again if an update fails to apply. For Kalshi that includes a
+non-contiguous `seq`: the gap is logged once and every later delta is
+ignored rather than applied onto a book known to be wrong. A new snapshot
+is the only thing that clears staleness; nothing requests one yet, so in
+practice a stale Kalshi book stays stale until the process restarts.
+
+Not built yet: the reader and book still run in one goroutine with no
+channel between them; there's no reconnect or resync, no `Tick` struct, no
+venue-pair config, no divergence calculation, no storage, and no metrics.
 
 ## Venue differences
 
@@ -98,19 +108,24 @@ Polymarket needs no credentials — the market channel is public:
 go run ./cmd/polymarket
 ```
 
-Both just connect, subscribe to one hardcoded market/asset, and print
-incoming messages to stdout until interrupted.
+Both connect, subscribe to one hardcoded market/asset, and log top-of-book
+changes and staleness transitions until interrupted or the connection
+drops.
 
 ## Layout
 
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
-cmd/kalshi/main.go                 connects to Kalshi's authenticated orderbook_delta channel, dumps raw messages
-cmd/polymarket/main.go             connects to Polymarket's public market channel, dumps raw messages, sends the app-level heartbeat
+cmd/kalshi/main.go                 connects to Kalshi's authenticated orderbook_delta channel, feeds a kalshi.Feed, logs best bid/ask changes
+cmd/polymarket/main.go             connects to Polymarket's public market channel, feeds a polymarket.Feed, logs best bid/ask changes, sends the app-level heartbeat
 internal/kalshi/book.go            Kalshi order book state: snapshot/delta application, yes/no inversion, sequence-gap rejection
 internal/kalshi/book_test.go       table-driven tests plus a replay of testdata/kalshi_capture.jsonl
+internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap), top-of-book change detection
+internal/kalshi/feed_test.go       fixture replay, injected seq gap, synthetic top-of-book moves
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
+internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection
+internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves
 testdata/kalshi_capture.jsonl      captured orderbook_snapshot/orderbook_delta messages for one Kalshi market
 testdata/polymarket_capture.jsonl  captured book/price_change/last_trade_price messages for one Polymarket asset
 go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket)

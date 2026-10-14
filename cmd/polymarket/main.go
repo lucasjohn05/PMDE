@@ -10,11 +10,15 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/lucasjohn05/pmde/internal/polymarket"
 )
 
 const wsURL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-const subscribeMsg = `{"assets_ids":["63842529068710005716169325380315470359047749786610778647370693404952498013178"],"type":"market"}`
+const assetID = "63842529068710005716169325380315470359047749786610778647370693404952498013178"
+
+const subscribeMsg = `{"assets_ids":["` + assetID + `"],"type":"market"}`
 
 func main() {
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -64,6 +68,7 @@ func main() {
 		conn.Close()
 	}()
 
+	feed := polymarket.NewFeed(assetID)
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -71,10 +76,28 @@ func main() {
 			break
 		}
 		if string(msg) == "PONG" {
-			fmt.Println("heartbeat: got PONG")
 			continue
 		}
-		fmt.Println(string(msg))
+
+		wasStale := feed.Stale()
+		changed, err := feed.Handle(msg)
+		if err != nil {
+			log.Printf("polymarket: %v", err)
+		}
+		switch {
+		case !wasStale && feed.Stale():
+			log.Printf("polymarket: book stale, ignoring price_change until the next book event")
+		case wasStale && !feed.Stale():
+			log.Printf("polymarket: book synced from book event")
+		}
+		if changed {
+			bid, ask, ok := feed.Best()
+			if ok {
+				log.Printf("polymarket: best: bid=%d ask=%d bps", bid, ask)
+			} else {
+				log.Printf("polymarket: best: none")
+			}
+		}
 	}
 
 	close(stopHeartbeat)
