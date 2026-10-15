@@ -100,16 +100,37 @@ func main() {
 		log.Fatalf("subscribe write error: %v", err)
 	}
 
-	var feed kalshi.Feed
+	q := kalshi.NewQueue(kalshi.QueueSize)
+	bookDone := make(chan struct{})
+	go func() {
+		defer close(bookDone)
+		runBook(q)
+	}()
+
+	// The reader does nothing but read and hand off, so it keeps pace with
+	// the socket however slow the book goroutine gets. Offer never blocks;
+	// if the queue is full the message is dropped and the book goes stale.
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Printf("read error: %v\n", err)
-			return
+			break
 		}
+		q.Offer(msg)
+	}
 
+	q.Close()
+	<-bookDone
+	log.Printf("kalshi: %d message(s) dropped in total", q.Drops())
+}
+
+// runBook is the book goroutine: the only goroutine that touches the
+// Feed. It applies queued messages until the reader closes the queue.
+func runBook(q *kalshi.Queue) {
+	var feed kalshi.Feed
+	for m := range q.Messages() {
 		wasStale := feed.Stale()
-		changed, err := feed.Handle(msg)
+		changed, err := feed.HandleQueued(m)
 		if err != nil {
 			log.Printf("kalshi: %v", err)
 		}

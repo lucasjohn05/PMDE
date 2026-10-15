@@ -68,7 +68,16 @@ func main() {
 		conn.Close()
 	}()
 
-	feed := polymarket.NewFeed(assetID)
+	q := polymarket.NewQueue(polymarket.QueueSize)
+	bookDone := make(chan struct{})
+	go func() {
+		defer close(bookDone)
+		runBook(q)
+	}()
+
+	// The reader does nothing but read and hand off, so it keeps pace with
+	// the socket however slow the book goroutine gets. Offer never blocks;
+	// if the queue is full the message is dropped and the book goes stale.
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -78,9 +87,24 @@ func main() {
 		if string(msg) == "PONG" {
 			continue
 		}
+		q.Offer(msg)
+	}
 
+	q.Close()
+	<-bookDone
+	close(stopHeartbeat)
+	hbWg.Wait()
+	log.Printf("polymarket: %d message(s) dropped in total", q.Drops())
+	fmt.Println("connection closed")
+}
+
+// runBook is the book goroutine: the only goroutine that touches the
+// Feed. It applies queued messages until the reader closes the queue.
+func runBook(q *polymarket.Queue) {
+	feed := polymarket.NewFeed(assetID)
+	for m := range q.Messages() {
 		wasStale := feed.Stale()
-		changed, err := feed.Handle(msg)
+		changed, err := feed.HandleQueued(m)
 		if err != nil {
 			log.Printf("polymarket: %v", err)
 		}
@@ -99,8 +123,4 @@ func main() {
 			}
 		}
 	}
-
-	close(stopHeartbeat)
-	hbWg.Wait()
-	fmt.Println("connection closed")
 }

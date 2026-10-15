@@ -21,8 +21,11 @@ Module: `github.com/lucasjohn05/pmde`, Go 1.27.
 - **No auto-matching**: venue pairs (which Kalshi market corresponds to which
   Polymarket market) are hand-written in a YAML config. Do not build any
   automatic market-matching logic.
-- **Backpressure**: channels between stages are bounded and block on full.
-  Never drop order book delta messages.
+- **Backpressure**: channels between stages are bounded. The websocket
+  reader never blocks: on a full channel it drops the message, counts the
+  drop, and marks that venue's book stale until it resyncs from a fresh
+  snapshot. A book is never used with a missing delta. Stages downstream of
+  the book block on full unless decided otherwise.
 
 ## Working style
 

@@ -29,15 +29,78 @@ bid/ask.
 
 A book is **stale** (untrusted, no best reported) until its first full
 snapshot — Kalshi's `orderbook_snapshot`, Polymarket's `book` event — and
-becomes stale again if an update fails to apply. For Kalshi that includes a
-non-contiguous `seq`: the gap is logged once and every later delta is
-ignored rather than applied onto a book known to be wrong. A new snapshot
-is the only thing that clears staleness; nothing requests one yet, so in
-practice a stale Kalshi book stays stale until the process restarts.
+becomes stale again if an update fails to apply or is dropped (see
+Backpressure below). For Kalshi, failing to apply includes a non-contiguous
+`seq`. The cause is logged once, and every later delta is ignored rather
+than applied onto a book known to be wrong. Only a new full snapshot clears
+staleness, and nothing requests one yet. Polymarket sometimes sends a
+`book` event mid-stream on its own, so a stale Polymarket book may recover
+by itself. A stale Kalshi book stays stale until the process restarts.
 
-Not built yet: the reader and book still run in one goroutine with no
-channel between them; there's no reconnect or resync, no `Tick` struct, no
+Each client runs two goroutines per venue: a reader that only reads the
+socket and hands messages off, and a book goroutine that owns the `Feed`
+and applies them. A bounded queue sits between them.
+
+Not built yet: there's no reconnect or resync, no `Tick` struct, no
 venue-pair config, no divergence calculation, no storage, and no metrics.
+Drops are counted, but the total is only logged at exit.
+
+## Backpressure
+
+The reader never blocks on the book goroutine. If the queue
+(`QueueSize`, 1024 messages per venue) is full, the reader drops the
+message, counts the drop, and moves on. The book goes stale at that point
+in the stream and stays stale until a fresh snapshot rebuilds it.
+
+**Why drop rather than block.** Blocking the reader would make the queue
+lossless only on paper. A blocked reader stops reading the socket, the
+venue's send buffer fills, and the venue may disconnect us as a slow
+consumer. Then the book is lost anyway, with a reconnect on top, and we
+learn about it later. Dropping keeps the connection healthy and turns the
+problem into one we already handle: a missing update. The real invariant is
+that a book is never *used* with a missing delta, and stale-until-resync
+keeps it. The cost is a gap in usable data until the next snapshot. For
+Kalshi, that means until the process restarts, until step 3's resync
+exists.
+
+**How the book goroutine learns about a drop.** The reader and the book
+goroutine share nothing but the queue. Each queued message carries the
+reader's running drop count at the moment it was enqueued. When the book
+goroutine handles a message whose count is higher than the previous one's,
+it knows at least one message was lost immediately before this one. It
+marks the book stale, then handles the message: a delta is ignored, and a
+snapshot rebuilds the book.
+
+Carrying the signal on the next message, rather than in a shared atomic
+flag, puts the stale mark at the exact point in the stream where the gap
+is. A flag would be seen at whatever moment the book goroutine next
+checked it. That can be while the goroutine is still working through
+messages queued *before* the drop. If one of those is a snapshot, the
+goroutine would treat it as the resync, clear the stale mark, and then
+apply post-drop updates onto a book that's missing one. Kalshi's `seq`
+check would catch that late; Polymarket has nothing that would. A separate
+"dropped" marker message doesn't work either, because the queue it would
+go into is the one that's full. The running count also never needs
+resetting, so there's no window where a reset could erase a new drop. The
+count is still an atomic, but only so other goroutines can read the total
+(for metrics later). Correctness doesn't depend on it.
+
+One consequence: a drop is noticed when the *next* message gets through,
+not when it happens. Until then the book goroutine is still working
+through updates received before the gap, and those are valid.
+
+**Why 1024.** Measured on the captures, applying a message costs about
+9µs, so the book goroutine can process on the order of 100k messages/s. The
+busiest second in the captures is 8 messages for Kalshi and 19 for
+Polymarket. So the queue isn't absorbing a consumer that is steadily
+slower than the feed. It's riding out short stalls: a GC pause, scheduling,
+a log write to a slow terminal. 1024 covers 1–2 minutes of the captured
+peak rate with the consumer completely stopped, and roughly half a second
+to a second at a hundred times that rate. That's a few MB at the largest
+captured message sizes. A larger queue wouldn't add safety. A consumer
+stalled long enough to fill it is already serving a book that's seconds
+old, and resyncing gets back to a current book faster than working
+through a long backlog of old deltas.
 
 ## Venue differences
 
@@ -116,16 +179,20 @@ drops.
 
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
-cmd/kalshi/main.go                 connects to Kalshi's authenticated orderbook_delta channel, feeds a kalshi.Feed, logs best bid/ask changes
-cmd/polymarket/main.go             connects to Polymarket's public market channel, feeds a polymarket.Feed, logs best bid/ask changes, sends the app-level heartbeat
+cmd/kalshi/main.go                 connects to Kalshi's authenticated orderbook_delta channel; reader goroutine -> queue -> book goroutine, logs best bid/ask changes
+cmd/polymarket/main.go             connects to Polymarket's public market channel; reader goroutine -> queue -> book goroutine, logs best bid/ask changes, sends the app-level heartbeat
 internal/kalshi/book.go            Kalshi order book state: snapshot/delta application, yes/no inversion, sequence-gap rejection
 internal/kalshi/book_test.go       table-driven tests plus a replay of testdata/kalshi_capture.jsonl
 internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap), top-of-book change detection
 internal/kalshi/feed_test.go       fixture replay, injected seq gap, synthetic top-of-book moves
+internal/kalshi/queue.go           bounded non-blocking reader->book queue, drop count carried on each message, QueueSize
+internal/kalshi/queue_test.go      fixture replay through a 2-slot queue forcing drops; stale mark lands at the drop's position
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
 internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection
 internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves
+internal/polymarket/queue.go       same queue as kalshi's, duplicated per the no-shared-venue-code rule
+internal/polymarket/queue_test.go  fixture replay through a 2-slot queue forcing drops; a pre-drop book event doesn't clear staleness
 testdata/kalshi_capture.jsonl      captured orderbook_snapshot/orderbook_delta messages for one Kalshi market
 testdata/polymarket_capture.jsonl  captured book/price_change/last_trade_price messages for one Polymarket asset
 go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket)
