@@ -75,15 +75,72 @@ func (f *Feed) Handle(raw []byte) (changed bool, err error) {
 // sequence numbers, nothing downstream would catch a missed price_change
 // if the stale mark landed at the wrong point in the stream.
 func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
-	var dropErr error
-	if m.Drops > f.drops {
-		dropErr = fmt.Errorf("polymarket: reader queue full, %d message(s) dropped (book is stale, resync required)",
-			m.Drops-f.drops)
-		f.drops = m.Drops
-		f.synced = false
-	}
+	dropErr := f.noteDrops(m.Drops)
 	changed, err = f.Handle(m.Raw)
 	return changed, errors.Join(dropErr, err)
+}
+
+// Next is one step of the book goroutine's loop: it handles the next
+// queued message, blocking until one arrives. ok is false once the reader
+// has closed the queue and it has drained; any drops not yet accounted for
+// still mark the book stale then, since the reader is done offering.
+//
+// Before blocking on an empty queue, Next checks whether the reader has
+// dropped anything since the last message handled. Otherwise a drop is
+// only noticed when the next message gets through, so a feed that goes
+// quiet right after one would leave the book looking valid while missing
+// an update. An empty queue means everything enqueued before the drop has
+// already been applied, so the book can be marked stale right there.
+//
+// The drop total is read before checking whether the queue is empty, not
+// after. Read after, the queue could fill up and drop in between, and the
+// book would be marked stale while messages from before that drop were
+// still queued. If one of those were a snapshot it would clear the mark,
+// and the drop after it would never be noticed: the message following it
+// carries a count the book has already seen.
+func (f *Feed) Next(q *Queue) (changed, ok bool, err error) {
+	total := q.Drops()
+	select {
+	case m, open := <-q.Messages():
+		if !open {
+			return f.closed(q)
+		}
+		changed, err = f.HandleQueued(m)
+		return changed, true, err
+	default:
+	}
+
+	if err := f.noteDrops(total); err != nil {
+		return f.updateBest(), true, err
+	}
+
+	m, open := <-q.Messages()
+	if !open {
+		return f.closed(q)
+	}
+	changed, err = f.HandleQueued(m)
+	return changed, true, err
+}
+
+// closed accounts for any final drops once the queue is closed and
+// drained. The reader's last Offer happened before Close, so the total is
+// final by now.
+func (f *Feed) closed(q *Queue) (changed, ok bool, err error) {
+	err = f.noteDrops(q.Drops())
+	return f.updateBest(), false, err
+}
+
+// noteDrops marks the book stale if the reader's drop total has risen past
+// what this Feed has already accounted for, and reports the drop.
+func (f *Feed) noteDrops(total uint64) error {
+	if total <= f.drops {
+		return nil
+	}
+	err := fmt.Errorf("polymarket: reader queue full, %d message(s) dropped (book is stale, resync required)",
+		total-f.drops)
+	f.drops = total
+	f.synced = false
+	return err
 }
 
 func (f *Feed) handleEvent(raw []byte) error {

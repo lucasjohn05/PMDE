@@ -41,7 +41,9 @@ type Queued struct {
 // goroutine. The reader never blocks on it: when it is full, the message
 // is dropped and counted, and the next message that does get through
 // carries the new count so the book goroutine marks the book stale
-// before applying it (see Feed.HandleQueued).
+// before applying it (see Feed.HandleQueued). If nothing gets through
+// after a drop, the book goroutine catches it when it finds the queue
+// empty (see Feed.Next).
 //
 // Offer and Close must only be called from the reader goroutine.
 type Queue struct {

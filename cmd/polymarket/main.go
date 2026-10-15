@@ -99,12 +99,15 @@ func main() {
 }
 
 // runBook is the book goroutine: the only goroutine that touches the
-// Feed. It applies queued messages until the reader closes the queue.
+// Feed. It applies queued messages until the reader closes the queue and
+// it drains.
 func runBook(q *polymarket.Queue) {
 	feed := polymarket.NewFeed(assetID)
-	for m := range q.Messages() {
+	for more := true; more; {
 		wasStale := feed.Stale()
-		changed, err := feed.HandleQueued(m)
+		var changed bool
+		var err error
+		changed, more, err = feed.Next(q)
 		if err != nil {
 			log.Printf("polymarket: %v", err)
 		}

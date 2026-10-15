@@ -82,12 +82,30 @@ check would catch that late; Polymarket has nothing that would. A separate
 "dropped" marker message doesn't work either, because the queue it would
 go into is the one that's full. The running count also never needs
 resetting, so there's no window where a reset could erase a new drop. The
-count is still an atomic, but only so other goroutines can read the total
-(for metrics later). Correctness doesn't depend on it.
+count is an atomic so the book goroutine can also read the running total
+directly, for the idle check below.
 
-One consequence: a drop is noticed when the *next* message gets through,
-not when it happens. Until then the book goroutine is still working
-through updates received before the gap, and those are valid.
+**Drops followed by silence.** On its own, the in-band count only
+reports a drop when the *next* message gets through. If the feed went
+quiet right after a drop, the book would look valid indefinitely while
+missing an update. So whenever the book goroutine finds the queue empty,
+it also compares the reader's atomic drop total with the last count it
+saw, and marks the book stale if the total has gone up. That's safe
+because an empty queue means everything enqueued before the drop has
+already been applied. The order matters: the total is read *before*
+checking that the queue is empty. Read after, the queue could fill up and
+drop in between, and the book would be marked stale while pre-drop
+messages were still queued. A pre-drop snapshot among them would then
+clear the mark, and the next message's count would already have been
+seen, so the drop would go unnoticed. The same check runs once more when
+the reader closes the queue, so a drop just before shutdown still
+counts. Until a drop is noticed, the book goroutine is working through
+updates from before the gap, and those are valid.
+
+The goroutine tests run under `go test -race` in CI (GitHub Actions,
+`ubuntu-latest`). The race detector doesn't run on the main dev machine
+(Windows with GCC 7.3; the race-enabled test binary fails to start with
+`0xc0000139`).
 
 **Why 1024.** Measured on the captures, applying a message costs about
 9µs, so the book goroutine can process on the order of 100k messages/s. The
@@ -179,20 +197,23 @@ drops.
 
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
+.github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
 cmd/kalshi/main.go                 connects to Kalshi's authenticated orderbook_delta channel; reader goroutine -> queue -> book goroutine, logs best bid/ask changes
 cmd/polymarket/main.go             connects to Polymarket's public market channel; reader goroutine -> queue -> book goroutine, logs best bid/ask changes, sends the app-level heartbeat
 internal/kalshi/book.go            Kalshi order book state: snapshot/delta application, yes/no inversion, sequence-gap rejection
 internal/kalshi/book_test.go       table-driven tests plus a replay of testdata/kalshi_capture.jsonl
-internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap), top-of-book change detection
+internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap / drop), top-of-book change detection, Next (the book loop step, incl. idle drop check)
 internal/kalshi/feed_test.go       fixture replay, injected seq gap, synthetic top-of-book moves
 internal/kalshi/queue.go           bounded non-blocking reader->book queue, drop count carried on each message, QueueSize
 internal/kalshi/queue_test.go      fixture replay through a 2-slot queue forcing drops; stale mark lands at the drop's position
+internal/kalshi/next_test.go       Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
-internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection
+internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection, Next (as kalshi)
 internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves
 internal/polymarket/queue.go       same queue as kalshi's, duplicated per the no-shared-venue-code rule
 internal/polymarket/queue_test.go  fixture replay through a 2-slot queue forcing drops; a pre-drop book event doesn't clear staleness
+internal/polymarket/next_test.go   Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
 testdata/kalshi_capture.jsonl      captured orderbook_snapshot/orderbook_delta messages for one Kalshi market
 testdata/polymarket_capture.jsonl  captured book/price_change/last_trade_price messages for one Polymarket asset
 go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket)
