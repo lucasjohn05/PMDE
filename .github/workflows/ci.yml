@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race doesn't run on the main dev machine (Windows), so this is
+      # where the reader/book goroutine tests get race-checked.
+      - name: go test -race
+        run: go test -race ./...
