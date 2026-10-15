@@ -126,6 +126,9 @@ func TestQueueDropMarksStaleAtTheRightPoint(t *testing.T) {
 	if !f.Stale() {
 		t.Fatalf("delta queued after the drop: book not stale")
 	}
+	if got := f.StaleReason(); got != ReasonDropped {
+		t.Fatalf("StaleReason() = %q, want %q", got, ReasonDropped)
+	}
 	if got := f.Book().LastSeq(); got != seqBefore {
 		t.Fatalf("LastSeq() = %d, want %d: the post-drop delta was applied", got, seqBefore)
 	}

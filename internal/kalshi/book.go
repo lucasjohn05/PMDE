@@ -5,6 +5,7 @@ package kalshi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,6 +34,10 @@ type Book struct {
 	yes     map[int]int64 // price bps -> size (centi-units)
 	no      map[int]int64 // price bps -> size (centi-units)
 }
+
+// ErrSeqGap is wrapped by ApplyDelta's error when a delta's seq doesn't
+// follow the last one applied.
+var ErrSeqGap = errors.New("sequence gap")
 
 // envelope is the common wrapper around every message on the
 // orderbook_delta channel: {"type":..., "sid":..., "seq":..., "msg":{...}}.
@@ -114,8 +119,8 @@ func (b *Book) ApplyDelta(raw []byte) error {
 		return fmt.Errorf("kalshi: ApplyDelta called with message type %q", env.Type)
 	}
 	if env.Seq != b.lastSeq+1 {
-		return fmt.Errorf("kalshi: sequence gap on %s: have seq %d, got seq %d (book is stale, resync required)",
-			b.MarketTicker, b.lastSeq, env.Seq)
+		return fmt.Errorf("kalshi: %w on %s: have seq %d, got seq %d (book is stale, resync required)",
+			ErrSeqGap, b.MarketTicker, b.lastSeq, env.Seq)
 	}
 
 	var msg deltaMsg

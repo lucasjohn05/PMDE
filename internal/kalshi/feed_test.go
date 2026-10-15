@@ -111,6 +111,9 @@ func TestFeedSeqGapGoesStale(t *testing.T) {
 	if !f.Stale() {
 		t.Fatalf("Stale() = false after a seq gap")
 	}
+	if got := f.StaleReason(); got != ReasonSeqGap {
+		t.Fatalf("StaleReason() = %q, want %q", got, ReasonSeqGap)
+	}
 	if _, _, ok := f.Best(); ok {
 		t.Fatalf("Best() ok = true on a stale book")
 	}

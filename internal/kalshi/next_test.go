@@ -53,6 +53,9 @@ func TestNextIdleDropMarksStale(t *testing.T) {
 	if !f.Stale() {
 		t.Fatalf("idle Next: book not stale after a drop")
 	}
+	if got := f.StaleReason(); got != ReasonDropped {
+		t.Fatalf("StaleReason() = %q, want %q", got, ReasonDropped)
+	}
 	if !r.changed {
 		t.Fatalf("idle Next: changed = false, want true (best goes from a quote to none)")
 	}

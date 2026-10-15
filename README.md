@@ -18,7 +18,9 @@ continuously.
 
 Both venue clients connect over WebSocket (Kalshi's with a signed
 request), build a live order book from the feed, and log the best bid/ask
-in basis points whenever it changes — not on every message.
+in basis points whenever it changes — not on every message. When the
+connection drops or the book goes stale, they reconnect and rebuild the
+book from a fresh snapshot (see Reconnect and resync below).
 
 Each venue package has a `Feed` that sits between the raw messages and the
 `Book`: it dispatches by message type, decides whether the book can be
@@ -31,19 +33,75 @@ A book is **stale** (untrusted, no best reported) until its first full
 snapshot — Kalshi's `orderbook_snapshot`, Polymarket's `book` event — and
 becomes stale again if an update fails to apply or is dropped (see
 Backpressure below). For Kalshi, failing to apply includes a non-contiguous
-`seq`. The cause is logged once, and every later delta is ignored rather
-than applied onto a book known to be wrong. Only a new full snapshot clears
-staleness, and nothing requests one yet. Polymarket sometimes sends a
-`book` event mid-stream on its own, so a stale Polymarket book may recover
-by itself. A stale Kalshi book stays stale until the process restarts.
+`seq`. Nothing is applied to a stale book; the client resyncs instead.
 
-Each client runs two goroutines per venue: a reader that only reads the
+Each venue's `Client` (`internal/kalshi`, `internal/polymarket`) runs one
+session per connection, with two goroutines: a reader that only reads the
 socket and hands messages off, and a book goroutine that owns the `Feed`
-and applies them. A bounded queue sits between them.
+and applies them. A bounded queue sits between them. `cmd/kalshi` and
+`cmd/polymarket` just configure a `Client` and run it.
 
-Not built yet: there's no reconnect or resync, no `Tick` struct, no
-venue-pair config, no divergence calculation, no storage, and no metrics.
-Drops are counted, but the total is only logged at exit.
+Not built yet: no `Tick` struct, no venue-pair config, no divergence
+calculation, no storage, and no metrics. Drops and resync reasons are
+logged, not yet counted anywhere.
+
+**The hardcoded markets have closed.** Both clients still point at the
+September 2026 Fed decision market, which resolved on Sept 16. Polymarket
+no longer has an order book for that asset. Run live, the client connects,
+gets no `book` event, and keeps retrying (with backoff) on the snapshot
+timeout. Pointing it at a live asset works: a 30-second run synced from the
+first `book` event and held the connection through the heartbeat. The
+Kalshi ticker is for the same September meeting. Choosing live markets
+belongs with the venue-pair config.
+
+## Reconnect and resync
+
+**Resync and reconnect are the same operation.** When a book goes stale (a
+seq gap, a dropped message, an update that won't apply), the book
+goroutine closes the connection and the client takes the ordinary
+reconnect path. A new connection means a new subscription, and both venues
+start every subscription with a full snapshot. That gives one recovery
+path instead of two, and it's the only one guaranteed to produce a
+snapshot on both venues. Polymarket sends `book` events mid-stream when it
+chooses, not on request. Kalshi might support re-subscribing in place, but
+that would be a second path to get right and test, for an event (a stale
+book) that should be rare. The cost is a fresh handshake, plus re-signing
+for Kalshi, on each resync.
+
+**Each session starts from nothing.** Every connection gets a fresh `Feed`
+and queue, so the old book is discarded rather than patched. For Kalshi,
+the new subscription's snapshot sets the baseline `seq`, and deltas are
+validated from there. For Polymarket, `price_change` events are ignored
+until the first `book` event. While a session has no trusted book, the
+client reports the best bid/ask as unavailable. The same happens the moment
+a session ends, so downstream code never holds a quote from a book that no
+longer exists.
+
+**Backoff.** The client waits before each reconnect. The wait window grows
+exponentially from 500ms and is capped at 30s. The actual delay is a
+random point in the upper half of that window ("equal jitter"). The floor
+stops a connection that keeps failing from retrying in a tight loop, and
+the randomness stops clients that fail for the same reason (one network
+blip) from retrying in lockstep. A session that stayed up for at least a
+minute resets the backoff, so an occasional drop reconnects within half a
+second while a flapping connection slows down. Each resync is logged with
+its reason: `seq_gap`, `dropped`, `invalid_update`, `reconnect` (the
+connection failed or was lost), or `snapshot_timeout`.
+
+**Two more ways a session ends.**
+- **Snapshot timeout.** No snapshot within 10s of subscribing, for
+  example a rejected subscription or, as it turns out, a closed market.
+- **Read timeout.** A minute with nothing at all from the venue. Kalshi
+  sends protocol pings and Polymarket answers our `PING`s, so silence that
+  long means the connection is dead even if TCP hasn't noticed. Kalshi's
+  ping interval is an assumption, roughly 10s; only the 60s read timeout
+  depends on it.
+
+**No shared reconnect code.** The two `Client`s are near-duplicates. They
+differ in auth (Kalshi signs every dial), heartbeat (Polymarket's
+app-level `PING`), and what counts as a snapshot. The backoff function is
+the only piece small and identical enough to share. It's duplicated
+instead, like `parseFixedPoint`, per the no-venue-abstraction rule.
 
 ## Backpressure
 
@@ -59,9 +117,8 @@ consumer. Then the book is lost anyway, with a reconnect on top, and we
 learn about it later. Dropping keeps the connection healthy and turns the
 problem into one we already handle: a missing update. The real invariant is
 that a book is never *used* with a missing delta, and stale-until-resync
-keeps it. The cost is a gap in usable data until the next snapshot. For
-Kalshi, that means until the process restarts, until step 3's resync
-exists.
+keeps it. The cost is a gap in usable data until the client has
+reconnected and received a fresh snapshot.
 
 **How the book goroutine learns about a drop.** The reader and the book
 goroutine share nothing but the queue. Each queued message carries the
@@ -152,11 +209,12 @@ any time, mid-stream, as a normal occurrence rather than a resync signal.
 **Keep-alive.** The two venues picked opposite mechanisms for the same
 problem: Kalshi uses WebSocket protocol-level ping/pong control frames,
 while Polymarket ignores those and instead requires an application-level
-`PING` text message every 10 seconds. So `cmd/kalshi` sends no heartbeat
-of its own — it relies on gorilla/websocket's default handling of
-protocol-level ping/pong frames — while `cmd/polymarket` sends the literal
-text `PING` every 10 seconds and treats a `PONG` reply as a heartbeat, not
-a data message.
+`PING` text message every 10 seconds. So the Kalshi client sends no
+heartbeat of its own. It answers Kalshi's protocol-level pings with pongs,
+as gorilla/websocket's default handler does, and also uses each ping to
+extend its read deadline. The Polymarket client sends the literal text
+`PING` every 10 seconds and treats a `PONG` reply as a heartbeat, not a
+data message.
 
 **Independent validation.** Polymarket's `price_change` messages carry
 `best_bid`/`best_ask` alongside the size update — the venue's own
@@ -190,18 +248,20 @@ go run ./cmd/polymarket
 ```
 
 Both connect, subscribe to one hardcoded market/asset, and log top-of-book
-changes and staleness transitions until interrupted or the connection
-drops.
+changes, resyncs and reconnects until interrupted. (Both hardcoded markets
+have closed; see Status.)
 
 ## Layout
 
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
-cmd/kalshi/main.go                 connects to Kalshi's authenticated orderbook_delta channel; reader goroutine -> queue -> book goroutine, logs best bid/ask changes
-cmd/polymarket/main.go             connects to Polymarket's public market channel; reader goroutine -> queue -> book goroutine, logs best bid/ask changes, sends the app-level heartbeat
+cmd/kalshi/main.go                 loads the API key, signs each dial, runs a kalshi.Client, logs best bid/ask changes
+cmd/polymarket/main.go             runs a polymarket.Client, logs best bid/ask changes
 internal/kalshi/book.go            Kalshi order book state: snapshot/delta application, yes/no inversion, sequence-gap rejection
 internal/kalshi/book_test.go       table-driven tests plus a replay of testdata/kalshi_capture.jsonl
+internal/kalshi/client.go          sessions (dial, subscribe, reader + book goroutines), resync on stale, reconnect with backoff, snapshot/read timeouts
+internal/kalshi/client_test.go     against a local websocket server: seq gap then mid-stream hang-up then full replay; snapshot timeout; backoff
 internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap / drop), top-of-book change detection, Next (the book loop step, incl. idle drop check)
 internal/kalshi/feed_test.go       fixture replay, injected seq gap, synthetic top-of-book moves
 internal/kalshi/queue.go           bounded non-blocking reader->book queue, drop count carried on each message, QueueSize
@@ -209,6 +269,8 @@ internal/kalshi/queue_test.go      fixture replay through a 2-slot queue forcing
 internal/kalshi/next_test.go       Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
+internal/polymarket/client.go      as kalshi's, plus the app-level PING heartbeat
+internal/polymarket/client_test.go against a local websocket server: mid-stream hang-up then full replay; forced drop through the real goroutines; backoff
 internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection, Next (as kalshi)
 internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves
 internal/polymarket/queue.go       same queue as kalshi's, duplicated per the no-shared-venue-code rule

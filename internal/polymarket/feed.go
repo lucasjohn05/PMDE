@@ -21,6 +21,7 @@ import (
 type Feed struct {
 	book   *Book
 	synced bool
+	reason string // see StaleReason
 
 	// drops is the reader's drop count as of the last queued message
 	// handled; see HandleQueued.
@@ -139,7 +140,7 @@ func (f *Feed) noteDrops(total uint64) error {
 	err := fmt.Errorf("polymarket: reader queue full, %d message(s) dropped (book is stale, resync required)",
 		total-f.drops)
 	f.drops = total
-	f.synced = false
+	f.markStale(ReasonDropped)
 	return err
 }
 
@@ -158,16 +159,17 @@ func (f *Feed) handleEvent(raw []byte) error {
 			return nil
 		}
 		if err := f.book.ApplySnapshot(raw); err != nil {
-			f.synced = false
+			f.markStale(ReasonInvalid)
 			return err
 		}
 		f.synced = true
+		f.reason = ""
 	case "price_change":
 		if !f.synced {
 			return nil
 		}
 		if err := f.book.ApplyPriceChange(raw); err != nil {
-			f.synced = false
+			f.markStale(ReasonInvalid)
 			return err
 		}
 	default:
@@ -175,6 +177,29 @@ func (f *Feed) handleEvent(raw []byte) error {
 		// book-level state.
 	}
 	return nil
+}
+
+// Reasons a trusted book goes stale, as reported by StaleReason. There's
+// no seq gap: Polymarket has no sequence numbers.
+const (
+	ReasonDropped = "dropped"        // the reader dropped a message (queue full)
+	ReasonInvalid = "invalid_update" // a message couldn't be parsed or applied
+)
+
+// markStale marks the book untrusted. The reason is kept only for the
+// transition from trusted, so it names what broke the book, not whatever
+// else went wrong after.
+func (f *Feed) markStale(reason string) {
+	if f.synced {
+		f.reason = reason
+	}
+	f.synced = false
+}
+
+// StaleReason reports why the book last went from trusted to stale (one
+// of the Reason constants), or "" if it is trusted or has never been.
+func (f *Feed) StaleReason() string {
+	return f.reason
 }
 
 // Best returns the top of book in basis points. ok is false while the book

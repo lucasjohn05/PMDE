@@ -127,6 +127,9 @@ func TestQueueDropMarksStaleAtTheRightPoint(t *testing.T) {
 	if !f.Stale() {
 		t.Fatalf("price_change queued after the drop: book not stale")
 	}
+	if got := f.StaleReason(); got != ReasonDropped {
+		t.Fatalf("StaleReason() = %q, want %q", got, ReasonDropped)
+	}
 	if _, ok := f.Book().BidSize(8160); ok {
 		t.Fatalf("post-drop price_change was applied to the book")
 	}

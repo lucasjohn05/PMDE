@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -9,14 +10,13 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"github.com/lucasjohn05/pmde/internal/kalshi"
 )
@@ -24,7 +24,7 @@ import (
 const wsURL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 const wsPath = "/trade-api/ws/v2"
 
-const subscribeMsg = `{"id":1,"cmd":"subscribe","params":{"channels":["orderbook_delta"],"market_ticker":"KXFEDDECISION-26SEP-H25"}}`
+const marketTicker = "KXFEDDECISION-26SEP-H25"
 
 func main() {
 	keyPath := os.Getenv("KALSHI_KEY_PATH")
@@ -68,6 +68,28 @@ func main() {
 		log.Fatalf("unsupported PEM block type: %s", block.Type)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	client := &kalshi.Client{
+		URL:    wsURL,
+		Ticker: marketTicker,
+		Header: func() (http.Header, error) { return signedHeader(privKey, keyID) },
+		OnBest: func(bid, ask int, ok bool) {
+			if ok {
+				log.Printf("kalshi: best yes: bid=%d ask=%d bps", bid, ask)
+			} else {
+				log.Printf("kalshi: best yes: none")
+			}
+		},
+		Logf: log.Printf,
+	}
+	client.Run(ctx)
+}
+
+// signedHeader builds Kalshi's auth headers. The signature covers the
+// current timestamp, so this runs on every dial, reconnects included.
+func signedHeader(privKey *rsa.PrivateKey, keyID string) (http.Header, error) {
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	message := timestamp + "GET" + wsPath
 
@@ -77,79 +99,12 @@ func main() {
 		Hash:       crypto.SHA256,
 	})
 	if err != nil {
-		log.Fatalf("signing request: %v", err)
+		return nil, fmt.Errorf("signing request: %w", err)
 	}
-	sigB64 := base64.StdEncoding.EncodeToString(sig)
 
 	header := http.Header{}
 	header.Set("KALSHI-ACCESS-KEY", keyID)
-	header.Set("KALSHI-ACCESS-SIGNATURE", sigB64)
+	header.Set("KALSHI-ACCESS-SIGNATURE", base64.StdEncoding.EncodeToString(sig))
 	header.Set("KALSHI-ACCESS-TIMESTAMP", timestamp)
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
-	if err != nil {
-		if resp != nil {
-			body, _ := io.ReadAll(resp.Body)
-			fmt.Printf("dial failed: status=%d body=%s\n", resp.StatusCode, string(body))
-		}
-		log.Fatalf("dial error: %v", err)
-	}
-	fmt.Println("connected")
-
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(subscribeMsg)); err != nil {
-		log.Fatalf("subscribe write error: %v", err)
-	}
-
-	q := kalshi.NewQueue(kalshi.QueueSize)
-	bookDone := make(chan struct{})
-	go func() {
-		defer close(bookDone)
-		runBook(q)
-	}()
-
-	// The reader does nothing but read and hand off, so it keeps pace with
-	// the socket however slow the book goroutine gets. Offer never blocks;
-	// if the queue is full the message is dropped and the book goes stale.
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			fmt.Printf("read error: %v\n", err)
-			break
-		}
-		q.Offer(msg)
-	}
-
-	q.Close()
-	<-bookDone
-	log.Printf("kalshi: %d message(s) dropped in total", q.Drops())
-}
-
-// runBook is the book goroutine: the only goroutine that touches the
-// Feed. It applies queued messages until the reader closes the queue and
-// it drains.
-func runBook(q *kalshi.Queue) {
-	var feed kalshi.Feed
-	for more := true; more; {
-		wasStale := feed.Stale()
-		var changed bool
-		var err error
-		changed, more, err = feed.Next(q)
-		if err != nil {
-			log.Printf("kalshi: %v", err)
-		}
-		switch {
-		case !wasStale && feed.Stale():
-			log.Printf("kalshi: book stale, ignoring deltas until a new snapshot")
-		case wasStale && !feed.Stale():
-			log.Printf("kalshi: book synced from snapshot (seq %d)", feed.Book().LastSeq())
-		}
-		if changed {
-			bid, ask, ok := feed.Best()
-			if ok {
-				log.Printf("kalshi: best yes: bid=%d ask=%d bps", bid, ask)
-			} else {
-				log.Printf("kalshi: best yes: none")
-			}
-		}
-	}
+	return header, nil
 }

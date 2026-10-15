@@ -20,6 +20,7 @@ import (
 type Feed struct {
 	book   Book
 	synced bool
+	reason string // see StaleReason
 
 	// drops is the reader's drop count as of the last queued message
 	// handled; see HandleQueued.
@@ -46,10 +47,11 @@ func (f *Feed) Handle(raw []byte) (changed bool, err error) {
 	switch probe.Type {
 	case "orderbook_snapshot":
 		if err := f.book.ApplySnapshot(raw); err != nil {
-			f.synced = false
+			f.markStale(ReasonInvalid)
 			return f.updateBest(), err
 		}
 		f.synced = true
+		f.reason = ""
 	case "orderbook_delta":
 		if !f.synced {
 			// Before the first snapshot there's nothing to apply onto;
@@ -57,7 +59,11 @@ func (f *Feed) Handle(raw []byte) (changed bool, err error) {
 			return f.updateBest(), nil
 		}
 		if err := f.book.ApplyDelta(raw); err != nil {
-			f.synced = false
+			if errors.Is(err, ErrSeqGap) {
+				f.markStale(ReasonSeqGap)
+			} else {
+				f.markStale(ReasonInvalid)
+			}
 			return f.updateBest(), err
 		}
 	case "error":
@@ -142,8 +148,31 @@ func (f *Feed) noteDrops(total uint64) error {
 	err := fmt.Errorf("kalshi: reader queue full, %d message(s) dropped (book is stale, resync required)",
 		total-f.drops)
 	f.drops = total
-	f.synced = false
+	f.markStale(ReasonDropped)
 	return err
+}
+
+// Reasons a trusted book goes stale, as reported by StaleReason.
+const (
+	ReasonSeqGap  = "seq_gap"        // a delta's seq didn't follow the last one
+	ReasonDropped = "dropped"        // the reader dropped a message (queue full)
+	ReasonInvalid = "invalid_update" // a message couldn't be parsed or applied
+)
+
+// markStale marks the book untrusted. The reason is kept only for the
+// transition from trusted, so it names what broke the book, not whatever
+// else went wrong after.
+func (f *Feed) markStale(reason string) {
+	if f.synced {
+		f.reason = reason
+	}
+	f.synced = false
+}
+
+// StaleReason reports why the book last went from trusted to stale (one
+// of the Reason constants), or "" if it is trusted or has never been.
+func (f *Feed) StaleReason() string {
+	return f.reason
 }
 
 // Best returns the top of book in basis points. ok is false while the book
