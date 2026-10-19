@@ -1,6 +1,9 @@
 package kalshi
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // QueueSize is the capacity of the channel between the websocket reader
 // and the book goroutine.
@@ -32,6 +35,10 @@ type Queued struct {
 	// reported in-band, at exactly the point in the stream where it
 	// happened.
 	Drops uint64
+
+	// Recv is when the reader read the message off the socket, for
+	// measuring ingest lag against the venue's own timestamp.
+	Recv time.Time
 }
 
 // Queue is the bounded hand-off from the websocket reader to the book
@@ -53,15 +60,16 @@ func NewQueue(size int) *Queue {
 	return &Queue{ch: make(chan Queued, size)}
 }
 
-// Offer enqueues raw without blocking. If the queue is full, raw is
-// dropped, the drop is counted, and Offer returns false.
+// Offer enqueues raw without blocking, stamped with the current time as
+// its receive time. If the queue is full, raw is dropped, the drop is
+// counted, and Offer returns false.
 //
 // raw must not be modified afterwards; gorilla/websocket's ReadMessage
 // returns a fresh slice per message, so passing it straight through is
 // safe.
 func (q *Queue) Offer(raw []byte) bool {
 	select {
-	case q.ch <- Queued{Raw: raw, Drops: q.drops.Load()}:
+	case q.ch <- Queued{Raw: raw, Drops: q.drops.Load(), Recv: time.Now()}:
 		return true
 	default:
 		q.drops.Add(1)

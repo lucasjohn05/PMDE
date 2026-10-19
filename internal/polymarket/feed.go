@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 )
 
 // Feed drives a Book from the raw messages on the CLOB market channel: it
@@ -27,6 +29,14 @@ type Feed struct {
 	// handled; see HandleQueued.
 	drops uint64
 
+	// venueMs is the venue's timestamp (Unix ms) on the message Handle
+	// last processed (the latest, if it framed several events), or 0 if
+	// it had none. lag/hasLag hold the ingest lag
+	// of the message the last HandleQueued or Next call handled; see Lag.
+	venueMs int64
+	lag     time.Duration
+	hasLag  bool
+
 	// Top of book as of the last time Handle reported a change.
 	bidBps, askBps int
 	bestOK         bool
@@ -45,6 +55,7 @@ func NewFeed(assetID string) *Feed {
 // snapshot on subscribe, in particular) and sometimes as a bare object;
 // Handle accepts both.
 func (f *Feed) Handle(raw []byte) (changed bool, err error) {
+	f.venueMs = 0
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var events []json.RawMessage
@@ -78,7 +89,23 @@ func (f *Feed) Handle(raw []byte) (changed bool, err error) {
 func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 	dropErr := f.noteDrops(m.Drops)
 	changed, err = f.Handle(m.Raw)
+	f.lag, f.hasLag = 0, false
+	if f.venueMs > 0 && !m.Recv.IsZero() {
+		f.lag, f.hasLag = m.Recv.Sub(time.UnixMilli(f.venueMs)), true
+	}
 	return changed, errors.Join(dropErr, err)
+}
+
+// Lag reports the ingest lag of the message the last HandleQueued or Next
+// call handled: when the reader received it minus the venue's timestamp
+// on it. ok is false if that call handled no message, or the message had
+// no timestamp. The lag includes any clock skew between the venue and
+// this host, so it can come out negative.
+//
+// Every message with a timestamp counts, applied to the book or not: lag
+// measures the transport, not the book.
+func (f *Feed) Lag() (lag time.Duration, ok bool) {
+	return f.lag, f.hasLag
 }
 
 // Next is one step of the book goroutine's loop: it handles the next
@@ -100,6 +127,7 @@ func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 // and the drop after it would never be noticed: the message following it
 // carries a count the book has already seen.
 func (f *Feed) Next(q *Queue) (changed, ok bool, err error) {
+	f.lag, f.hasLag = 0, false
 	total := q.Drops()
 	select {
 	case m, open := <-q.Messages():
@@ -148,9 +176,19 @@ func (f *Feed) handleEvent(raw []byte) error {
 	var probe struct {
 		EventType string `json:"event_type"`
 		AssetID   string `json:"asset_id"`
+		Timestamp string `json:"timestamp"` // Unix ms, as a string
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return fmt.Errorf("polymarket: decoding event_type: %w", err)
+	}
+	// A book event's timestamp is when the book last changed, not when
+	// the event was sent: the snapshot on subscribe can be seconds or
+	// minutes old on a quiet market. That measures the market, not our
+	// ingest, so book events don't count toward lag.
+	if probe.EventType != "book" {
+		if ms, err := strconv.ParseInt(probe.Timestamp, 10, 64); err == nil && ms > f.venueMs {
+			f.venueMs = ms
+		}
 	}
 
 	switch probe.EventType {

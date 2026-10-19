@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/lucasjohn05/pmde/internal/metrics"
 )
 
 const captureTicker = "KXFEDDECISION-26SEP-H25"
@@ -144,6 +147,59 @@ func runClient(t *testing.T, v *fakeVenue, c *Client) (stop func()) {
 	}
 }
 
+// metricValue reads one series from g: a counter's or gauge's value, or a
+// histogram's sample count. labels are name/value pairs.
+func metricValue(t *testing.T, g prometheus.Gatherer, name string, labels ...string) float64 {
+	t.Helper()
+	families, err := g.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+	series:
+		for _, m := range mf.GetMetric() {
+			have := map[string]string{}
+			for _, l := range m.GetLabel() {
+				have[l.GetName()] = l.GetValue()
+			}
+			for i := 0; i+1 < len(labels); i += 2 {
+				if have[labels[i]] != labels[i+1] {
+					continue series
+				}
+			}
+			switch {
+			case m.GetCounter() != nil:
+				return m.GetCounter().GetValue()
+			case m.GetGauge() != nil:
+				return m.GetGauge().GetValue()
+			case m.GetHistogram() != nil:
+				return float64(m.GetHistogram().GetSampleCount())
+			}
+		}
+	}
+	t.Fatalf("no series %s%v", name, labels)
+	return 0
+}
+
+// checkMetrics compares series of the given venue against want, keyed by
+// "name" or "name/reason".
+func checkMetrics(t *testing.T, g prometheus.Gatherer, venue string, want map[string]float64) {
+	t.Helper()
+	for key, w := range want {
+		name, reason, _ := strings.Cut(key, "/")
+		labels := []string{"venue", venue}
+		if reason != "" {
+			labels = append(labels, "reason", reason)
+		}
+		if got := metricValue(t, g, name, labels...); got != w {
+			t.Errorf("%s = %v, want %v", key, got, w)
+		}
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -202,14 +258,35 @@ func TestClientRecoversFromSeqGapAndReconnect(t *testing.T) {
 		func(conn *websocket.Conn) { send(conn, lines) },
 	}}
 	rec := &recorder{}
-	c := &Client{Ticker: captureTicker, OnBest: rec.onBest, Logf: rec.logf, onFeed: rec.onFeed}
+	reg := prometheus.NewRegistry()
+	c := &Client{Ticker: captureTicker, OnBest: rec.onBest, Logf: rec.logf, onFeed: rec.onFeed,
+		Metrics: metrics.New(reg).Venue("kalshi")}
 	stop := runClient(t, v, c)
 
 	waitFor(t, 10*time.Second, "the third connection's book to match a clean replay", func() bool {
 		_, _, state := rec.snapshot()
 		return v.conns.Load() == 3 && matches(state, want)
 	})
+	checkMetrics(t, reg, "kalshi", map[string]float64{"book_stale": 0})
 	stop()
+
+	// Two reconnects; the first session's book was lost to the seq gap,
+	// the second's to the hang-up. Shutting down isn't a resync.
+	checkMetrics(t, reg, "kalshi", map[string]float64{
+		"book_stale":                       1,
+		"reconnects_total":                 2,
+		"resyncs_total/" + ReasonSeqGap:    1,
+		"resyncs_total/" + ReasonReconnect: 1,
+		"resyncs_total/" + ReasonDropped:   0,
+		"resyncs_total/" + ReasonInvalid:   0,
+		"dropped_messages_total":           0,
+	})
+	if n := metricValue(t, reg, "messages_total", "venue", "kalshi"); n < float64(len(lines)) {
+		t.Errorf("messages_total = %v, want at least the third connection's %d", n, len(lines))
+	}
+	if n := metricValue(t, reg, "ingest_lag_seconds", "venue", "kalshi"); n == 0 {
+		t.Errorf("ingest_lag_seconds has no samples")
+	}
 
 	logs, bests, _ := rec.snapshot()
 	t.Logf("log:\n  %s", strings.Join(logs, "\n  "))
@@ -265,7 +342,9 @@ func TestClientSnapshotTimeout(t *testing.T) {
 		func(conn *websocket.Conn) { send(conn, lines) },
 	}}
 	rec := &recorder{}
-	c := &Client{Ticker: captureTicker, Logf: rec.logf, onFeed: rec.onFeed, snapshotTimeout: 200 * time.Millisecond}
+	reg := prometheus.NewRegistry()
+	c := &Client{Ticker: captureTicker, Logf: rec.logf, onFeed: rec.onFeed, snapshotTimeout: 200 * time.Millisecond,
+		Metrics: metrics.New(reg).Venue("kalshi")}
 	stop := runClient(t, v, c)
 
 	waitFor(t, 10*time.Second, "the second connection's book to match a clean replay", func() bool {
@@ -273,6 +352,16 @@ func TestClientSnapshotTimeout(t *testing.T) {
 		return v.conns.Load() == 2 && matches(state, want)
 	})
 	stop()
+
+	// The first session never had a book, so it lost nothing: a
+	// reconnect, but no resync.
+	checkMetrics(t, reg, "kalshi", map[string]float64{
+		"reconnects_total":                 1,
+		"resyncs_total/" + ReasonReconnect: 0,
+		"resyncs_total/" + ReasonSeqGap:    0,
+		"resyncs_total/" + ReasonInvalid:   0,
+		"resyncs_total/" + ReasonDropped:   0,
+	})
 
 	logs, _, _ := rec.snapshot()
 	if !strings.Contains(strings.Join(logs, "\n"), "resync ("+ReasonSnapshotTimeout+")") {

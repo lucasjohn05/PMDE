@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/lucasjohn05/pmde/internal/metrics"
 )
 
 // fakeVenue is a websocket server that waits for each connection's
@@ -142,6 +145,59 @@ func runClient(t *testing.T, v *fakeVenue, c *Client) (stop func()) {
 	}
 }
 
+// metricValue reads one series from g: a counter's or gauge's value, or a
+// histogram's sample count. labels are name/value pairs.
+func metricValue(t *testing.T, g prometheus.Gatherer, name string, labels ...string) float64 {
+	t.Helper()
+	families, err := g.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+	series:
+		for _, m := range mf.GetMetric() {
+			have := map[string]string{}
+			for _, l := range m.GetLabel() {
+				have[l.GetName()] = l.GetValue()
+			}
+			for i := 0; i+1 < len(labels); i += 2 {
+				if have[labels[i]] != labels[i+1] {
+					continue series
+				}
+			}
+			switch {
+			case m.GetCounter() != nil:
+				return m.GetCounter().GetValue()
+			case m.GetGauge() != nil:
+				return m.GetGauge().GetValue()
+			case m.GetHistogram() != nil:
+				return float64(m.GetHistogram().GetSampleCount())
+			}
+		}
+	}
+	t.Fatalf("no series %s%v", name, labels)
+	return 0
+}
+
+// checkMetrics compares series of the given venue against want, keyed by
+// "name" or "name/reason".
+func checkMetrics(t *testing.T, g prometheus.Gatherer, venue string, want map[string]float64) {
+	t.Helper()
+	for key, w := range want {
+		name, reason, _ := strings.Cut(key, "/")
+		labels := []string{"venue", venue}
+		if reason != "" {
+			labels = append(labels, "reason", reason)
+		}
+		if got := metricValue(t, g, name, labels...); got != w {
+			t.Errorf("%s = %v, want %v", key, got, w)
+		}
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -204,14 +260,32 @@ func TestClientRecoversFromReconnect(t *testing.T) {
 		func(conn *websocket.Conn) { send(conn, lines) },
 	}}
 	rec := &recorder{}
-	c := &Client{AssetID: captureAssetID, OnBest: rec.onBest, Logf: rec.logf, onFeed: rec.onFeed}
+	reg := prometheus.NewRegistry()
+	c := &Client{AssetID: captureAssetID, OnBest: rec.onBest, Logf: rec.logf, onFeed: rec.onFeed,
+		Metrics: metrics.New(reg).Venue("polymarket")}
 	stop := runClient(t, v, c)
 
 	waitFor(t, 10*time.Second, "the second connection's book to match a clean replay", func() bool {
 		_, _, state := rec.snapshot()
 		return v.conns.Load() == 2 && matches(state, want)
 	})
+	checkMetrics(t, reg, "polymarket", map[string]float64{"book_stale": 0})
 	stop()
+
+	checkMetrics(t, reg, "polymarket", map[string]float64{
+		"book_stale":                       1,
+		"reconnects_total":                 1,
+		"resyncs_total/" + ReasonReconnect: 1,
+		"resyncs_total/" + ReasonDropped:   0,
+		"resyncs_total/" + ReasonInvalid:   0,
+		"dropped_messages_total":           0,
+	})
+	if n := metricValue(t, reg, "messages_total", "venue", "polymarket"); n < float64(len(lines)) {
+		t.Errorf("messages_total = %v, want at least the second connection's %d", n, len(lines))
+	}
+	if n := metricValue(t, reg, "ingest_lag_seconds", "venue", "polymarket"); n == 0 {
+		t.Errorf("ingest_lag_seconds has no samples")
+	}
 
 	logs, bests, _ := rec.snapshot()
 	t.Logf("log:\n  %s", strings.Join(logs, "\n  "))
@@ -261,10 +335,12 @@ func TestClientResyncsAfterDrop(t *testing.T) {
 	var holdOnce sync.Once
 
 	rec := &recorder{}
+	reg := prometheus.NewRegistry()
 	c := &Client{
 		AssetID: captureAssetID,
 		Logf:    rec.logf,
-		onQueue: func(q *Queue) { queue.Store(q) },
+		Metrics: metrics.New(reg).Venue("polymarket"),
+		onQueue: func(q *Queue) { queue.CompareAndSwap(nil, q) }, // the first session's
 		onFeed: func(f *Feed) {
 			rec.onFeed(f)
 			if !f.Stale() {
@@ -313,6 +389,22 @@ func TestClientResyncsAfterDrop(t *testing.T) {
 	t.Logf("log:\n  %s", strings.Join(logs, "\n  "))
 	if reasons := resyncReasons(logs); len(reasons) < 1 || reasons[0] != ReasonDropped {
 		t.Fatalf("resync reasons = %v, want [%s ...]", reasons, ReasonDropped)
+	}
+
+	// Every drop the reader made is counted, and the book's loss is a
+	// resync for "dropped", not for the reconnect that followed.
+	drops := queue.Load().Drops()
+	if drops < burst-QueueSize {
+		t.Fatalf("first session dropped %d, want at least %d", drops, burst-QueueSize)
+	}
+	checkMetrics(t, reg, "polymarket", map[string]float64{
+		"dropped_messages_total":           float64(drops),
+		"resyncs_total/" + ReasonDropped:   1,
+		"resyncs_total/" + ReasonReconnect: 0,
+		"reconnects_total":                 1,
+	})
+	if n := metricValue(t, reg, "messages_total", "venue", "polymarket"); n < float64(1+burst+len(lines)) {
+		t.Errorf("messages_total = %v, want at least %d", n, 1+burst+len(lines))
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Feed drives a Book from the raw messages on the orderbook_delta channel:
@@ -26,6 +27,13 @@ type Feed struct {
 	// handled; see HandleQueued.
 	drops uint64
 
+	// venueMs is the venue's timestamp (Unix ms) on the message Handle
+	// last processed, or 0 if it had none. lag/hasLag hold the ingest lag
+	// of the message the last HandleQueued or Next call handled; see Lag.
+	venueMs int64
+	lag     time.Duration
+	hasLag  bool
+
 	// Top of book as of the last time Handle reported a change.
 	bidBps, askBps int
 	bestOK         bool
@@ -36,6 +44,7 @@ type Feed struct {
 // message. A non-nil err means the message was rejected; if the book was
 // trusted before, it is now stale (see Stale).
 func (f *Feed) Handle(raw []byte) (changed bool, err error) {
+	f.venueMs = 0
 	var probe struct {
 		Type string          `json:"type"`
 		Msg  json.RawMessage `json:"msg"`
@@ -53,6 +62,14 @@ func (f *Feed) Handle(raw []byte) (changed bool, err error) {
 		f.synced = true
 		f.reason = ""
 	case "orderbook_delta":
+		// ts_ms is the venue's timestamp, for ingest lag. Snapshots don't
+		// carry one.
+		var ts struct {
+			TsMs int64 `json:"ts_ms"`
+		}
+		if json.Unmarshal(probe.Msg, &ts) == nil {
+			f.venueMs = ts.TsMs
+		}
 		if !f.synced {
 			// Before the first snapshot there's nothing to apply onto;
 			// after a gap, applying would build on a wrong base.
@@ -86,7 +103,23 @@ func (f *Feed) Handle(raw []byte) (changed bool, err error) {
 func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 	dropErr := f.noteDrops(m.Drops)
 	changed, err = f.Handle(m.Raw)
+	f.lag, f.hasLag = 0, false
+	if f.venueMs > 0 && !m.Recv.IsZero() {
+		f.lag, f.hasLag = m.Recv.Sub(time.UnixMilli(f.venueMs)), true
+	}
 	return changed, errors.Join(dropErr, err)
+}
+
+// Lag reports the ingest lag of the message the last HandleQueued or Next
+// call handled: when the reader received it minus the venue's timestamp
+// on it. ok is false if that call handled no message, or the message had
+// no timestamp. The lag includes any clock skew between the venue and
+// this host, so it can come out negative.
+//
+// Every message with a timestamp counts, applied to the book or not: lag
+// measures the transport, not the book.
+func (f *Feed) Lag() (lag time.Duration, ok bool) {
+	return f.lag, f.hasLag
 }
 
 // Next is one step of the book goroutine's loop: it handles the next
@@ -108,6 +141,7 @@ func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 // and the drop after it would never be noticed: the message following it
 // carries a count the book has already seen.
 func (f *Feed) Next(q *Queue) (changed, ok bool, err error) {
+	f.lag, f.hasLag = 0, false
 	total := q.Drops()
 	select {
 	case m, open := <-q.Messages():

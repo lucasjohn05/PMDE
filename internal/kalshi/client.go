@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/lucasjohn05/pmde/internal/metrics"
 )
 
 // Reasons a session ends other than the book going stale (see the Feed's
@@ -73,6 +75,9 @@ type Client struct {
 	// Logf receives operational log lines. Nil discards them.
 	Logf func(format string, args ...any)
 
+	// Metrics records this venue's metrics. Nil records nothing.
+	Metrics *metrics.Venue
+
 	// Test hooks; zero in production.
 	snapshotTimeout time.Duration  // overrides defaultSnapshotTimeout
 	onQueue         func(q *Queue) // called with each session's queue
@@ -89,11 +94,21 @@ type Client struct {
 func (c *Client) Run(ctx context.Context) {
 	attempt := 0
 	for {
+		if attempt > 0 {
+			c.Metrics.Reconnect()
+		}
 		start := time.Now()
-		reason, err := c.session(ctx)
+		reason, hadBook, err := c.session(ctx)
 		c.report(0, 0, false) // whatever ended the session, the book went with it
+		c.Metrics.SetStale(true)
 		if ctx.Err() != nil {
 			return
+		}
+		// A resync is the loss of a trusted book. A session that never
+		// synced (a failed dial, a snapshot timeout) lost nothing; it
+		// shows up in reconnects_total only.
+		if hadBook {
+			c.Metrics.Resync(reason)
 		}
 
 		if time.Since(start) >= healthyAfter {
@@ -117,21 +132,22 @@ func (c *Client) Run(ctx context.Context) {
 
 // session runs one connection from dial to close and reports why it
 // ended: one of the Feed's Reason constants if the book went stale, or
-// ReasonReconnect / ReasonSnapshotTimeout.
-func (c *Client) session(ctx context.Context) (reason string, err error) {
+// ReasonReconnect / ReasonSnapshotTimeout. hadBook reports whether the
+// book was trusted at some point during the session.
+func (c *Client) session(ctx context.Context) (reason string, hadBook bool, err error) {
 	var header http.Header
 	if c.Header != nil {
 		if header, err = c.Header(); err != nil {
-			return ReasonReconnect, fmt.Errorf("building headers: %w", err)
+			return ReasonReconnect, false, fmt.Errorf("building headers: %w", err)
 		}
 	}
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, c.URL, header)
 	if err != nil {
 		if resp != nil {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-			return ReasonReconnect, fmt.Errorf("dial: %w (status %d: %s)", err, resp.StatusCode, body)
+			return ReasonReconnect, false, fmt.Errorf("dial: %w (status %d: %s)", err, resp.StatusCode, body)
 		}
-		return ReasonReconnect, fmt.Errorf("dial: %w", err)
+		return ReasonReconnect, false, fmt.Errorf("dial: %w", err)
 	}
 	// Closing the connection is how every session ends: the reader's
 	// ReadMessage fails, it closes the queue, and the book goroutine
@@ -155,11 +171,11 @@ func (c *Client) session(ctx context.Context) (reason string, err error) {
 
 	sub, err := c.subscribeMsg()
 	if err != nil {
-		return ReasonReconnect, err
+		return ReasonReconnect, false, err
 	}
 	conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if err := conn.WriteMessage(websocket.TextMessage, sub); err != nil {
-		return ReasonReconnect, fmt.Errorf("subscribe: %w", err)
+		return ReasonReconnect, false, fmt.Errorf("subscribe: %w", err)
 	}
 
 	q := NewQueue(QueueSize)
@@ -196,7 +212,10 @@ func (c *Client) session(ctx context.Context) (reason string, err error) {
 			break
 		}
 		conn.SetReadDeadline(time.Now().Add(readTimeout))
-		q.Offer(msg)
+		c.Metrics.Message()
+		if !q.Offer(msg) {
+			c.Metrics.Dropped()
+		}
 	}
 	q.Close()
 	<-bookDone
@@ -206,13 +225,13 @@ func (c *Client) session(ctx context.Context) (reason string, err error) {
 
 	select {
 	case reason := <-staleReason:
-		return reason, nil
+		return reason, true, nil
 	default:
 	}
 	if timedOut.Load() {
-		return ReasonSnapshotTimeout, fmt.Errorf("no snapshot within %v of subscribing", snapshotTimeout)
+		return ReasonSnapshotTimeout, false, fmt.Errorf("no snapshot within %v of subscribing", snapshotTimeout)
 	}
-	return ReasonReconnect, readErr
+	return ReasonReconnect, synced.Load(), readErr
 }
 
 // runBook is the book goroutine for one session: the only goroutine that
@@ -228,10 +247,14 @@ func (c *Client) runBook(q *Queue, conn *websocket.Conn, synced *atomic.Bool, st
 		if c.onFeed != nil {
 			c.onFeed(&f)
 		}
+		if lag, ok := f.Lag(); ok {
+			c.Metrics.ObserveLag(lag)
+		}
 
 		switch {
 		case wasStale && !f.Stale():
 			synced.Store(true)
+			c.Metrics.SetStale(false)
 			c.logf("kalshi: book synced from snapshot (seq %d)", f.Book().LastSeq())
 		case !wasStale && f.Stale():
 			// The book can't be repaired in place. End the session so Run
@@ -239,6 +262,7 @@ func (c *Client) runBook(q *Queue, conn *websocket.Conn, synced *atomic.Bool, st
 			// is still queued belongs to the broken stream, so it's
 			// drained unread.
 			staleReason <- f.StaleReason()
+			c.Metrics.SetStale(true)
 			c.report(f.Best())
 			conn.Close()
 			for range q.Messages() {

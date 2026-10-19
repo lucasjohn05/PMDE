@@ -41,9 +41,12 @@ socket and hands messages off, and a book goroutine that owns the `Feed`
 and applies them. A bounded queue sits between them. `cmd/kalshi` and
 `cmd/polymarket` just configure a `Client` and run it.
 
+Each binary serves Prometheus metrics on `/metrics`: message, drop,
+reconnect and resync counts, whether the book is stale, and ingest lag
+(see Metrics below).
+
 Not built yet: no `Tick` struct, no venue-pair config, no divergence
-calculation, no storage, and no metrics. Drops and resync reasons are
-logged, not yet counted anywhere.
+calculation, and no storage.
 
 **The hardcoded markets have closed.** Both clients still point at the
 September 2026 Fed decision market, which resolved on Sept 16. Polymarket
@@ -177,6 +180,73 @@ stalled long enough to fill it is already serving a book that's seconds
 old, and resyncing gets back to a current book faster than working
 through a long backlog of old deltas.
 
+## Metrics
+
+Each binary serves `/metrics` on `-metrics-addr` (default `:9101` for
+Kalshi, `:9102` for Polymarket, so both can run on one host). Every
+series is labeled `venue`.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `messages_total` | counter | Messages read off the websocket, dropped ones included. Polymarket's `PONG` heartbeat replies aren't counted. |
+| `dropped_messages_total` | counter | Messages the reader dropped because the queue was full. |
+| `reconnects_total` | counter | Every dial after the first, failed ones included. |
+| `resyncs_total{reason}` | counter | Times a trusted book was lost and had to be rebuilt from a fresh snapshot. `reason` is `seq_gap`, `dropped`, `reconnect` or `invalid_update`. |
+| `book_stale` | gauge | 1 while there's no trusted book: before the first snapshot, after it goes stale, and while reconnecting. |
+| `ingest_lag_seconds` | histogram | Receive time minus the venue's timestamp on the message. Buckets from 1ms to ~16s, doubling. |
+
+**Reconnects and resyncs count different things.** A resync is the loss
+of a book; a reconnect is a dial. One seq gap is one resync and at least
+one reconnect. A string of failed dials, or a market that never sends a
+snapshot (the closed hardcoded markets do exactly that), adds reconnects
+but no resyncs, because there was no book to lose. So the reasons are what
+broke a trusted book: `seq_gap`, `dropped`, `reconnect` (the connection
+was lost while the book was live), and `invalid_update` (an update that
+couldn't be parsed or applied). That last reason isn't in the original
+spec, but folding it into one of the others would misreport it. A snapshot
+timeout can't be a resync reason: it only fires before the first snapshot.
+
+**Every series exists from startup.** Counters start at 0 and
+`book_stale` at 1, rather than appearing on their first event. Otherwise a
+query like `rate(resyncs_total{reason="seq_gap"}[5m])` has nothing to
+return until the first gap, and an alert on it can't tell "no gaps" from
+"not scraping".
+
+**The reader stays cheap.** The reader goroutine increments
+`messages_total` and `dropped_messages_total`. Each venue's client gets
+its counters with the venue label already applied, so that's one atomic
+add per message, with no label lookup and no lock. It doesn't parse JSON
+either: the queue stamps each message with its receive time, and the book
+goroutine, which parses the message anyway, reads the venue's timestamp
+and records the lag.
+
+**Ingest lag.** Both venues provide a usable timestamp.
+- **Kalshi:** `ts_ms` on each `orderbook_delta`. Snapshots don't carry
+  one.
+- **Polymarket:** `timestamp` (Unix ms, as a string) on `price_change`,
+  `last_trade_price` and the other events. If one message frames several
+  events, the newest timestamp counts.
+- **Polymarket `book` events are excluded.** Their `timestamp` is when the
+  book last changed, not when the event was sent. In a live run, the
+  snapshot on subscribe was 3s and 13s old, while `price_change` events
+  arrived ~100ms after their stamp. Counting snapshots would measure how
+  quiet the market is and would skew the histogram on every reconnect.
+- **Messages count whether or not they're applied** (for example, deltas
+  before the first snapshot), because lag measures the transport, not the
+  book. Dropped messages never reach the book goroutine, so they aren't
+  measured.
+- **Lag includes clock skew** between the venue and this host, so the host
+  clock needs NTP. If the venue's clock runs ahead, a sample can be
+  negative; it's recorded as is rather than clamped, so skew stays visible
+  instead of being hidden as zero.
+- Kalshi's `ts_ms` is assumed to be when Kalshi produced the delta. It
+  hasn't been checked against a live feed (no credentials yet).
+
+**Serving.** The metrics port is bound at startup, so a bad or busy
+address stops the binary immediately instead of failing quietly in the
+background. The registry also carries the standard Go runtime and process
+collectors.
+
 ## Venue differences
 
 The two venues don't expose the same shape of data, and the book code for
@@ -251,32 +321,40 @@ Both connect, subscribe to one hardcoded market/asset, and log top-of-book
 changes, resyncs and reconnects until interrupted. (Both hardcoded markets
 have closed; see Status.)
 
+Metrics are on `http://localhost:9101/metrics` (Kalshi) and
+`http://localhost:9102/metrics` (Polymarket). Change the address with
+`-metrics-addr`, e.g. `go run ./cmd/polymarket -metrics-addr :9200`.
+
 ## Layout
 
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
-cmd/kalshi/main.go                 loads the API key, signs each dial, runs a kalshi.Client, logs best bid/ask changes
-cmd/polymarket/main.go             runs a polymarket.Client, logs best bid/ask changes
+cmd/kalshi/main.go                 loads the API key, signs each dial, serves /metrics, runs a kalshi.Client, logs best bid/ask changes
+cmd/polymarket/main.go             serves /metrics, runs a polymarket.Client, logs best bid/ask changes
 internal/kalshi/book.go            Kalshi order book state: snapshot/delta application, yes/no inversion, sequence-gap rejection
 internal/kalshi/book_test.go       table-driven tests plus a replay of testdata/kalshi_capture.jsonl
-internal/kalshi/client.go          sessions (dial, subscribe, reader + book goroutines), resync on stale, reconnect with backoff, snapshot/read timeouts
-internal/kalshi/client_test.go     against a local websocket server: seq gap then mid-stream hang-up then full replay; snapshot timeout; backoff
+internal/kalshi/client.go          sessions (dial, subscribe, reader + book goroutines), resync on stale, reconnect with backoff, snapshot/read timeouts, metrics
+internal/kalshi/client_test.go     against a local websocket server: seq gap then mid-stream hang-up then full replay; snapshot timeout; backoff; metric values
 internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap / drop), top-of-book change detection, Next (the book loop step, incl. idle drop check)
 internal/kalshi/feed_test.go       fixture replay, injected seq gap, synthetic top-of-book moves
+internal/kalshi/lag_test.go        Feed.Lag: ts_ms on deltas, none on snapshots, negative skew, cleared by a step with no message
 internal/kalshi/queue.go           bounded non-blocking reader->book queue, drop count carried on each message, QueueSize
 internal/kalshi/queue_test.go      fixture replay through a 2-slot queue forcing drops; stale mark lands at the drop's position
 internal/kalshi/next_test.go       Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
+internal/metrics/metrics.go        the Prometheus metrics, a per-venue recorder with the label pre-applied, the /metrics server
+internal/metrics/metrics_test.go   series exist up front, values recorded, nil recorder, server and busy-port startup error
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
 internal/polymarket/client.go      as kalshi's, plus the app-level PING heartbeat
-internal/polymarket/client_test.go against a local websocket server: mid-stream hang-up then full replay; forced drop through the real goroutines; backoff
+internal/polymarket/client_test.go against a local websocket server: mid-stream hang-up then full replay; forced drop through the real goroutines; backoff; metric values
 internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection, Next (as kalshi)
 internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves
+internal/polymarket/lag_test.go    Feed.Lag: timestamp on price_change/last_trade_price, not book events, newest in an array
 internal/polymarket/queue.go       same queue as kalshi's, duplicated per the no-shared-venue-code rule
 internal/polymarket/queue_test.go  fixture replay through a 2-slot queue forcing drops; a pre-drop book event doesn't clear staleness
 internal/polymarket/next_test.go   Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
 testdata/kalshi_capture.jsonl      captured orderbook_snapshot/orderbook_delta messages for one Kalshi market
 testdata/polymarket_capture.jsonl  captured book/price_change/last_trade_price messages for one Polymarket asset
-go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket)
+go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket, prometheus/client_golang)
 ```
