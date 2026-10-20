@@ -16,6 +16,11 @@ continuously.
 
 ## Status
 
+`cmd/pmde` is the service. It reads venue pairs from `pairs.yaml`, runs a
+client for every market in them, and tracks each pair's divergence (see
+Divergence below). `cmd/kalshi` and `cmd/polymarket` run a single
+venue's client against one hardcoded market, for debugging.
+
 Both venue clients connect over WebSocket (Kalshi's with a signed
 request), build a live order book from the feed, and log the best bid/ask
 in basis points whenever it changes — not on every message. When the
@@ -39,23 +44,25 @@ Each venue's `Client` (`internal/kalshi`, `internal/polymarket`) runs one
 session per connection, with two goroutines: a reader that only reads the
 socket and hands messages off, and a book goroutine that owns the `Feed`
 and applies them. A bounded queue sits between them. `cmd/kalshi` and
-`cmd/polymarket` just configure a `Client` and run it.
+`cmd/polymarket` just configure a `Client` and run it. Clients report
+their top of book as a `Tick` (`internal/tick`), the one venue-neutral
+shape everything downstream works on.
 
 Each binary serves Prometheus metrics on `/metrics`: message, drop,
-reconnect and resync counts, whether the book is stale, and ingest lag
-(see Metrics below).
+reconnect and resync counts, whether each book is stale, ingest lag, and
+(for `cmd/pmde`) each pair's divergence (see Metrics below).
 
-Not built yet: no `Tick` struct, no venue-pair config, no divergence
-calculation, and no storage.
+Not built yet: storage.
 
-**The hardcoded markets have closed.** Both clients still point at the
-September 2026 Fed decision market, which resolved on Sept 16. Polymarket
-no longer has an order book for that asset. Run live, the client connects,
-gets no `book` event, and keeps retrying (with backoff) on the snapshot
-timeout. Pointing it at a live asset works: a 30-second run synced from the
-first `book` event and held the connection through the heartbeat. The
-Kalshi ticker is for the same September meeting. Choosing live markets
-belongs with the venue-pair config.
+**Live runs.** `cmd/pmde` with the two October 2026 FOMC pairs in
+`pairs.yaml` synced all four books within a second and logged both
+divergences. One run also lived through the host losing its network
+(it went to sleep): all four connections dropped, dials failed on DNS with
+backoff growing to ~17s, and every book resynced on its own once the
+network was back. `cmd/kalshi` and `cmd/polymarket` still point at the
+September 2026 Fed market, which has resolved: Polymarket no longer has a
+book for it, so that client loops on the snapshot timeout, while Kalshi
+still serves a snapshot with no quotes.
 
 ## Reconnect and resync
 
@@ -97,8 +104,9 @@ connection failed or was lost), or `snapshot_timeout`.
 - **Read timeout.** A minute with nothing at all from the venue. Kalshi
   sends protocol pings and Polymarket answers our `PING`s, so silence that
   long means the connection is dead even if TCP hasn't noticed. Kalshi's
-  ping interval is an assumption, roughly 10s; only the 60s read timeout
-  depends on it.
+  exact ping interval isn't documented here, but a live Kalshi connection
+  that carried no data for 90s stayed up, so its pings arrive well inside
+  the 60s.
 
 **No shared reconnect code.** The two `Client`s are near-duplicates. They
 differ in auth (Kalshi signs every dial), heartbeat (Polymarket's
@@ -182,9 +190,13 @@ through a long backlog of old deltas.
 
 ## Metrics
 
-Each binary serves `/metrics` on `-metrics-addr` (default `:9101` for
-Kalshi, `:9102` for Polymarket, so both can run on one host). Every
-series is labeled `venue`.
+Each binary serves `/metrics` on `-metrics-addr` (default `:9100` for
+`cmd/pmde`, `:9101` for `cmd/kalshi`, `:9102` for `cmd/polymarket`, so
+they can run side by side). The ingest series are labeled `venue` and
+`market` (the Kalshi ticker or Polymarket asset ID): `cmd/pmde` runs one
+client per market, and a per-venue `book_stale` would just be whichever
+client wrote last. Sum over `market` for per-venue totals. The divergence
+gauges are labeled `pair`.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -194,6 +206,8 @@ series is labeled `venue`.
 | `resyncs_total{reason}` | counter | Times a trusted book was lost and had to be rebuilt from a fresh snapshot. `reason` is `seq_gap`, `dropped`, `reconnect` or `invalid_update`. |
 | `book_stale` | gauge | 1 while there's no trusted book: before the first snapshot, after it goes stale, and while reconnecting. |
 | `ingest_lag_seconds` | histogram | Receive time minus the venue's timestamp on the message. Buckets from 1ms to ~16s, doubling. |
+| `divergence_mid_bps{pair}` | gauge | Kalshi mid minus Polymarket mid. Absent while either book is untrusted. |
+| `divergence_gap_bps{pair}` | gauge | Executable gap (see Divergence). Absent while either book is untrusted. |
 
 **Reconnects and resyncs count different things.** A resync is the loss
 of a book; a reconnect is a dial. One seq gap is one resync and at least
@@ -206,11 +220,13 @@ couldn't be parsed or applied). That last reason isn't in the original
 spec, but folding it into one of the others would misreport it. A snapshot
 timeout can't be a resync reason: it only fires before the first snapshot.
 
-**Every series exists from startup.** Counters start at 0 and
+**Every ingest series exists from startup.** Counters start at 0 and
 `book_stale` at 1, rather than appearing on their first event. Otherwise a
 query like `rate(resyncs_total{reason="seq_gap"}[5m])` has nothing to
 return until the first gap, and an alert on it can't tell "no gaps" from
-"not scraping".
+"not scraping". The divergence gauges are the exception, on purpose: any
+number there, 0 included, reads as a real comparison, so they exist only
+while there is one.
 
 **The reader stays cheap.** The reader goroutine increments
 `messages_total` and `dropped_messages_total`. Each venue's client gets
@@ -238,14 +254,75 @@ and records the lag.
 - **Lag includes clock skew** between the venue and this host, so the host
   clock needs NTP. If the venue's clock runs ahead, a sample can be
   negative; it's recorded as is rather than clamped, so skew stays visible
-  instead of being hidden as zero.
-- Kalshi's `ts_ms` is assumed to be when Kalshi produced the delta. It
-  hasn't been checked against a live feed (no credentials yet).
+  instead of being hidden as zero. This showed up for real: after the dev
+  machine woke from sleep, both venues' lag read ~1.3s instead of ~0.1s,
+  and `w32tm /stripchart` put the local clock 1.24s ahead. Net of that,
+  Kalshi (`ts_ms`) and Polymarket both came to ~100ms, which also
+  confirms `ts_ms` behaves as the event time.
 
 **Serving.** The metrics port is bound at startup, so a bad or busy
 address stops the binary immediately instead of failing quietly in the
 background. The registry also carries the standard Go runtime and process
 collectors.
+
+## Divergence
+
+`cmd/pmde` loads venue pairs from `pairs.yaml` (`-config` to change it):
+
+```yaml
+pairs:
+  - name: fed-oct-2026-hold
+    kalshi: KXFEDDECISION-26OCT-H0
+    polymarket: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
+```
+
+Each pair is a Kalshi market ticker and the Polymarket asset (token) ID of
+the outcome that means the same as Kalshi's "yes". Pairs are written by
+hand; nothing matches markets automatically. The loader is strict: an
+unknown key (a typo like `polymarkt`) is an error rather than an empty
+field, and so is a duplicate name, a duplicate pairing, or a `0x...`
+condition ID where the decimal token ID belongs. A market can appear in
+more than one pair; it still gets one client and one connection.
+
+**Two numbers per pair, both in bps:**
+- **Mid divergence**: Kalshi mid minus Polymarket mid. Signed, so it says
+  which venue prices the outcome higher. It's computed as
+  `((kBid + kAsk) - (pBid + pAsk)) / 2`, with Go's integer division
+  (truncating toward zero). Halving the difference once rounds once
+  instead of twice; it's only inexact when the two spreads add up to an
+  odd number of bps, and then by half a basis point.
+- **Executable gap**: `max(kBid - pAsk, pBid - kAsk)`. Positive means the
+  books cross: buying on one venue and selling on the other locks in that
+  much, before fees. Zero means the best quotes touch; negative is how far
+  apart they are. Mid divergence alone can't tell "the venues disagree"
+  from "both spreads are wide".
+
+**When it's computed.** Clients only emit a Tick when their top of book
+changes, so the tracker recomputes a pair exactly when either side's best
+changes. It logs a pair only when its divergence changes (or becomes
+unavailable), not on every Tick.
+
+**Skipped when either book is untrusted** (stale, reconnecting, not yet
+synced, or with an empty side). The pair's gauges are deleted rather than
+left at their last value, which would look current, and the log says
+which side is missing. They come back on the next valid Tick.
+
+**The tick stage blocks.** All clients send Ticks into one bounded channel
+(`TickQueueSize`, 256) read by the tracker. Per CLAUDE.md, stages
+downstream of the book block on full rather than drop. A dropped Tick would
+leave the tracker holding an old top of book with nothing to say it's old;
+a dropped *message* upstream is safe only because the book goroutine marks
+the book stale. If the tracker stalled for long, the block would back up
+into that client's reader->book queue, which drops, marks the book stale
+and resyncs: an existing failure path that's already counted and logged.
+The tracker's work per Tick is a few map lookups, so in practice the
+channel is near empty. On shutdown the send gives up instead, so a client
+can't hang on a tracker that has stopped.
+
+**Live, 2026-10-20:** `fed-oct-2026-hold` at mid +100 (Kalshi 87/88¢,
+Polymarket 86/87¢) and `fed-oct-2026-hike-25` at mid -100 (Kalshi 12/13¢,
+Polymarket 13/14¢). Both have a gap of 0: the venues sit a tick apart and
+touch, without crossing.
 
 ## Venue differences
 
@@ -303,7 +380,15 @@ interface would mean encoding one venue's assumptions as the general case.
 
 ## Running it
 
-Kalshi needs an API key:
+The service (both venues, every pair in `pairs.yaml`):
+
+```
+KALSHI_KEY_PATH=/path/to/private_key.pem
+KALSHI_KEY_ID=<your key id>
+go run ./cmd/pmde                       # -config pairs.yaml -metrics-addr :9100
+```
+
+Single-venue debug clients, each against one hardcoded market. Kalshi needs an API key:
 
 ```
 KALSHI_KEY_PATH=/path/to/private_key.pem
@@ -321,7 +406,8 @@ Both connect, subscribe to one hardcoded market/asset, and log top-of-book
 changes, resyncs and reconnects until interrupted. (Both hardcoded markets
 have closed; see Status.)
 
-Metrics are on `http://localhost:9101/metrics` (Kalshi) and
+Metrics are on `http://localhost:9100/metrics` (`cmd/pmde`),
+`http://localhost:9101/metrics` (Kalshi) and
 `http://localhost:9102/metrics` (Polymarket). Change the address with
 `-metrics-addr`, e.g. `go run ./cmd/polymarket -metrics-addr :9200`.
 
@@ -330,8 +416,16 @@ Metrics are on `http://localhost:9101/metrics` (Kalshi) and
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
-cmd/kalshi/main.go                 loads the API key, signs each dial, serves /metrics, runs a kalshi.Client, logs best bid/ask changes
-cmd/polymarket/main.go             serves /metrics, runs a polymarket.Client, logs best bid/ask changes
+cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks -> divergence tracker, /metrics
+cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics
+cmd/polymarket/main.go             debug: one polymarket.Client on a hardcoded asset, logs best bid/ask changes, /metrics
+pairs.yaml                         the hand-written venue pairs (October 2026 FOMC: hold, hike 25)
+internal/tick/tick.go              Tick: venue, market, best bid/ask in bps, trusted or not; what clients emit
+internal/divergence/config.go      pair config loading and validation (strict YAML)
+internal/divergence/config_test.go valid config, every rejection, and the committed pairs.yaml
+internal/divergence/divergence.go  Compute (mid divergence, executable gap), Tracker (latest Tick per market, recompute affected pairs), TickQueueSize
+internal/divergence/divergence_test.go Compute table incl. rounding and crossed books; Tracker: shared markets, stale skip, gauge removal, log-on-change; Run over a channel
+internal/kalshi/auth.go            RSA key loading and per-dial request signing
 internal/kalshi/book.go            Kalshi order book state: snapshot/delta application, yes/no inversion, sequence-gap rejection
 internal/kalshi/book_test.go       table-driven tests plus a replay of testdata/kalshi_capture.jsonl
 internal/kalshi/client.go          sessions (dial, subscribe, reader + book goroutines), resync on stale, reconnect with backoff, snapshot/read timeouts, metrics
@@ -342,8 +436,8 @@ internal/kalshi/lag_test.go        Feed.Lag: ts_ms on deltas, none on snapshots,
 internal/kalshi/queue.go           bounded non-blocking reader->book queue, drop count carried on each message, QueueSize
 internal/kalshi/queue_test.go      fixture replay through a 2-slot queue forcing drops; stale mark lands at the drop's position
 internal/kalshi/next_test.go       Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
-internal/metrics/metrics.go        the Prometheus metrics, a per-venue recorder with the label pre-applied, the /metrics server
-internal/metrics/metrics_test.go   series exist up front, values recorded, nil recorder, server and busy-port startup error
+internal/metrics/metrics.go        the Prometheus metrics, a per-market recorder with labels pre-applied, per-pair divergence gauges, the /metrics server
+internal/metrics/metrics_test.go   series exist up front, values recorded, pair gauges set/cleared, nil recorders, server and busy-port startup error
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
 internal/polymarket/client.go      as kalshi's, plus the app-level PING heartbeat
@@ -356,5 +450,5 @@ internal/polymarket/queue_test.go  fixture replay through a 2-slot queue forcing
 internal/polymarket/next_test.go   Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
 testdata/kalshi_capture.jsonl      captured orderbook_snapshot/orderbook_delta messages for one Kalshi market
 testdata/polymarket_capture.jsonl  captured book/price_change/last_trade_price messages for one Polymarket asset
-go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket, prometheus/client_golang)
+go.mod, go.sum                     module definition (Go 1.27, gorilla/websocket, prometheus/client_golang, go.yaml.in/yaml/v3)
 ```

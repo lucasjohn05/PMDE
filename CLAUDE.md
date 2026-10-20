@@ -11,8 +11,9 @@ Module: `github.com/lucasjohn05/pmde`, Go 1.27.
 
 ## Hard constraints
 
-- **Dependencies**: `gorilla/websocket` and `prometheus/client_golang` only.
-  Ask before adding anything else.
+- **Dependencies**: `gorilla/websocket`, `prometheus/client_golang` and
+  `go.yaml.in/yaml/v3` (for the venue pair config) only. Ask before adding
+  anything else.
 - **Prices**: integer basis points (0-10000) everywhere. Never use floats for
   price.
 - **No venue abstraction**: no `Exchange` interface, no plugin/registry

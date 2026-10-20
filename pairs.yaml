@@ -1,0 +1,26 @@
+# Venue pairs: which Kalshi market and which Polymarket asset quote the
+# same outcome of the same event. Hand-written on purpose; nothing in pmde
+# matches markets automatically.
+#
+#   name:       label for logs and the divergence_*_bps{pair} gauges
+#   kalshi:     Kalshi market ticker; its "yes" side is compared
+#   polymarket: Polymarket asset (token) ID of the outcome that means the
+#               same as Kalshi's "yes" (each Polymarket market has two
+#               tokens: take the one for the matching outcome, usually
+#               "Yes"). Not the market's 0x... condition ID.
+#
+# Check that the two venues' resolution rules really describe the same
+# outcome before adding a pair; a near-match is a different market.
+
+pairs:
+  # FOMC decision, October 27-28 2026. Kalshi event KXFEDDECISION-26OCT;
+  # Polymarket event "Fed Decision in October?".
+  - name: fed-oct-2026-hold
+    kalshi: KXFEDDECISION-26OCT-H0 # Fed maintains rate
+    # "Will there be no change in Fed interest rates after the October 2026 meeting?" (Yes)
+    polymarket: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
+
+  - name: fed-oct-2026-hike-25
+    kalshi: KXFEDDECISION-26OCT-H25 # Hike 25bps
+    # "Will the Fed increase interest rates by 25 bps after the October 2026 meeting?" (Yes)
+    polymarket: "55159722761418013044126414276680602270318000841690689684819994448621694923050"

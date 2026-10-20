@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/lucasjohn05/pmde/internal/metrics"
+	"github.com/lucasjohn05/pmde/internal/tick"
 )
 
 // Reasons a session ends other than the book going stale (see the Feed's
@@ -66,24 +67,25 @@ type Client struct {
 	// Nil means no extra headers.
 	Header func() (http.Header, error)
 
-	// OnBest is called whenever the trusted top of book changes,
-	// including to ok=false when the book goes stale or the connection is
-	// lost. It runs on the book goroutine, so a slow OnBest backs up the
-	// queue.
-	OnBest func(bidBps, askBps int, ok bool)
+	// OnTick is called whenever the trusted top of book changes,
+	// including to OK=false when the book goes stale or the connection is
+	// lost. It runs on the book goroutine, so a slow OnTick backs up the
+	// queue (and, past QueueSize, makes the reader drop and the book
+	// resync).
+	OnTick func(tick.Tick)
 
 	// Logf receives operational log lines. Nil discards them.
 	Logf func(format string, args ...any)
 
-	// Metrics records this venue's metrics. Nil records nothing.
-	Metrics *metrics.Venue
+	// Metrics records this market's metrics. Nil records nothing.
+	Metrics *metrics.Market
 
 	// Test hooks; zero in production.
 	snapshotTimeout time.Duration  // overrides defaultSnapshotTimeout
 	onQueue         func(q *Queue) // called with each session's queue
 	onFeed          func(f *Feed)  // called on the book goroutine after each step
 
-	// Last top of book passed to OnBest. Touched by one session's book
+	// Last top of book passed to OnTick. Touched by one session's book
 	// goroutine at a time, and by Run between sessions.
 	lastBid, lastAsk int
 	lastOK           bool
@@ -277,7 +279,7 @@ func (c *Client) runBook(q *Queue, conn *websocket.Conn, synced *atomic.Bool, st
 	}
 }
 
-// report passes the top of book to OnBest if it changed.
+// report passes the top of book to OnTick if it changed.
 func (c *Client) report(bidBps, askBps int, ok bool) {
 	if !ok {
 		bidBps, askBps = 0, 0
@@ -286,8 +288,8 @@ func (c *Client) report(bidBps, askBps int, ok bool) {
 		return
 	}
 	c.lastBid, c.lastAsk, c.lastOK = bidBps, askBps, ok
-	if c.OnBest != nil {
-		c.OnBest(bidBps, askBps, ok)
+	if c.OnTick != nil {
+		c.OnTick(tick.Tick{Venue: tick.Kalshi, Market: c.Ticker, BidBps: bidBps, AskBps: askBps, OK: ok, Time: time.Now()})
 	}
 }
 

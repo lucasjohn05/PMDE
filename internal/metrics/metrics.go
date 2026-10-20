@@ -1,9 +1,10 @@
 // Package metrics defines PMDE's Prometheus metrics and serves them.
 //
-// Every metric is labeled by venue. The venue clients don't touch the
-// metric vectors directly: each gets a *Venue with the venue label
-// already applied, so recording on the hot path (the websocket reader)
-// is a single atomic add with no label lookup.
+// The ingest metrics are labeled by venue and market (one venue client
+// per market), the divergence gauges by pair. The venue clients don't
+// touch the metric vectors directly: each gets a *Market with its labels
+// already applied, so recording on the hot path (the websocket reader) is
+// a single atomic add with no label lookup.
 package metrics
 
 import (
@@ -38,6 +39,9 @@ type Metrics struct {
 	resyncs   *prometheus.CounterVec
 	stale     *prometheus.GaugeVec
 	lag       *prometheus.HistogramVec
+
+	divMid *prometheus.GaugeVec
+	divGap *prometheus.GaugeVec
 }
 
 // New creates the metrics and registers them on reg.
@@ -46,82 +50,90 @@ func New(reg prometheus.Registerer) *Metrics {
 		messages: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "messages_total",
 			Help: "Messages read off the venue websocket, including ones later dropped. Excludes heartbeats.",
-		}, []string{"venue"}),
+		}, []string{"venue", "market"}),
 		dropped: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "dropped_messages_total",
 			Help: "Messages the websocket reader dropped because the queue to the book goroutine was full.",
-		}, []string{"venue"}),
+		}, []string{"venue", "market"}),
 		reconnect: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "reconnects_total",
 			Help: "Reconnect attempts: every dial after the first, failed ones included.",
-		}, []string{"venue"}),
+		}, []string{"venue", "market"}),
 		resyncs: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "resyncs_total",
 			Help: "Times a trusted book was lost and had to be rebuilt from a fresh snapshot, by what broke it.",
-		}, []string{"venue", "reason"}),
+		}, []string{"venue", "market", "reason"}),
 		stale: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "book_stale",
 			Help: "1 while the venue's book is untrusted (not yet synced, stale, or reconnecting), else 0.",
-		}, []string{"venue"}),
+		}, []string{"venue", "market"}),
 		lag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "ingest_lag_seconds",
 			Help: "Receive time minus the venue's message timestamp. Includes clock skew between the venue and this host.",
 			// 1ms to ~16s, doubling.
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15),
-		}, []string{"venue"}),
+		}, []string{"venue", "market"}),
+		divMid: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "divergence_mid_bps",
+			Help: "Kalshi mid minus Polymarket mid, in bps. Absent while either book has no trusted top of book.",
+		}, []string{"pair"}),
+		divGap: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "divergence_gap_bps",
+			Help: "Executable gap in bps: max(Kalshi bid - Polymarket ask, Polymarket bid - Kalshi ask). Positive means the books cross. Absent while either book has no trusted top of book.",
+		}, []string{"pair"}),
 	}
-	reg.MustRegister(m.messages, m.dropped, m.reconnect, m.resyncs, m.stale, m.lag)
+	reg.MustRegister(m.messages, m.dropped, m.reconnect, m.resyncs, m.stale, m.lag, m.divMid, m.divGap)
 	return m
 }
 
-// Venue returns the metrics for one venue, with every series it can
-// produce created up front: counters at 0, book_stale at 1 (nothing is
-// trusted until the first snapshot). A series that only appears after
-// its first event is hard to alert on.
-func (m *Metrics) Venue(name string) *Venue {
-	v := &Venue{
-		messages:  m.messages.WithLabelValues(name),
-		dropped:   m.dropped.WithLabelValues(name),
-		reconnect: m.reconnect.WithLabelValues(name),
+// Market returns the metrics for one venue client's market, with every
+// series it can produce created up front: counters at 0, book_stale at 1
+// (nothing is trusted until the first snapshot). A series that only
+// appears after its first event is hard to alert on.
+func (m *Metrics) Market(venue, market string) *Market {
+	v := &Market{
+		messages:  m.messages.WithLabelValues(venue, market),
+		dropped:   m.dropped.WithLabelValues(venue, market),
+		reconnect: m.reconnect.WithLabelValues(venue, market),
 		resyncs:   make(map[string]prometheus.Counter, len(resyncReasons)),
-		stale:     m.stale.WithLabelValues(name),
-		lag:       m.lag.WithLabelValues(name),
+		stale:     m.stale.WithLabelValues(venue, market),
+		lag:       m.lag.WithLabelValues(venue, market),
 	}
 	for _, r := range resyncReasons {
-		v.resyncs[r] = m.resyncs.WithLabelValues(name, r)
+		v.resyncs[r] = m.resyncs.WithLabelValues(venue, market, r)
 	}
 	v.stale.Set(1)
 	return v
 }
 
-// Venue records one venue's metrics. A nil *Venue records nothing, so
-// clients and tests that don't care about metrics can leave it unset.
-// Safe for concurrent use.
-type Venue struct {
+// Market records one venue client's metrics. A nil *Market records
+// nothing, so clients and tests that don't care about metrics can leave it
+// unset. Safe for concurrent use.
+type Market struct {
 	messages  prometheus.Counter
 	dropped   prometheus.Counter
 	reconnect prometheus.Counter
-	resyncs   map[string]prometheus.Counter // read-only after Venue()
+	resyncs   map[string]prometheus.Counter // read-only after Market()
 	stale     prometheus.Gauge
 	lag       prometheus.Observer
 }
 
 // Message counts one message read off the websocket.
-func (v *Venue) Message() {
+func (v *Market) Message() {
 	if v != nil {
 		v.messages.Inc()
 	}
 }
 
 // Dropped counts one message the reader dropped.
-func (v *Venue) Dropped() {
+func (v *Market) Dropped() {
 	if v != nil {
 		v.dropped.Inc()
 	}
 }
 
 // Reconnect counts one reconnect attempt.
-func (v *Venue) Reconnect() {
+func (v *Market) Reconnect() {
 	if v != nil {
 		v.reconnect.Inc()
 	}
@@ -130,7 +142,7 @@ func (v *Venue) Reconnect() {
 // Resync counts the loss of a trusted book. reason should be one of the
 // Resync constants; any other value is counted under "invalid_update"
 // rather than creating an unbounded label.
-func (v *Venue) Resync(reason string) {
+func (v *Market) Resync(reason string) {
 	if v == nil {
 		return
 	}
@@ -142,7 +154,7 @@ func (v *Venue) Resync(reason string) {
 }
 
 // SetStale sets book_stale.
-func (v *Venue) SetStale(stale bool) {
+func (v *Market) SetStale(stale bool) {
 	if v == nil {
 		return
 	}
@@ -154,10 +166,43 @@ func (v *Venue) SetStale(stale bool) {
 }
 
 // ObserveLag records one message's ingest lag.
-func (v *Venue) ObserveLag(d time.Duration) {
+func (v *Market) ObserveLag(d time.Duration) {
 	if v != nil {
 		v.lag.Observe(d.Seconds())
 	}
+}
+
+// Pair returns the divergence gauges for one venue pair. Unlike the
+// ingest series, these don't exist until there's a value: 0 would read as
+// "the venues agree", which is a real (and wrong) reading when one book
+// is stale.
+func (m *Metrics) Pair(name string) *Pair {
+	return &Pair{m: m, name: name}
+}
+
+// Pair records one venue pair's divergence. A nil *Pair records nothing.
+type Pair struct {
+	m    *Metrics
+	name string
+}
+
+// Set records the current divergence.
+func (p *Pair) Set(midBps, gapBps int) {
+	if p == nil {
+		return
+	}
+	p.m.divMid.WithLabelValues(p.name).Set(float64(midBps))
+	p.m.divGap.WithLabelValues(p.name).Set(float64(gapBps))
+}
+
+// Clear removes the pair's series: there's no valid divergence while
+// either book is untrusted, and a held-over value would look current.
+func (p *Pair) Clear() {
+	if p == nil {
+		return
+	}
+	p.m.divMid.DeleteLabelValues(p.name)
+	p.m.divGap.DeleteLabelValues(p.name)
 }
 
 // NewRegistry returns a registry with the Go runtime and process

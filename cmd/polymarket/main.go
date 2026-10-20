@@ -10,6 +10,7 @@ import (
 
 	"github.com/lucasjohn05/pmde/internal/metrics"
 	"github.com/lucasjohn05/pmde/internal/polymarket"
+	"github.com/lucasjohn05/pmde/internal/tick"
 )
 
 const wsURL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -34,15 +35,15 @@ func main() {
 	client := &polymarket.Client{
 		URL:     wsURL,
 		AssetID: assetID,
-		OnBest: func(bid, ask int, ok bool) {
-			if ok {
-				log.Printf("polymarket: best: bid=%d ask=%d bps", bid, ask)
+		OnTick: func(t tick.Tick) {
+			if t.OK {
+				log.Printf("polymarket: best: bid=%d ask=%d bps", t.BidBps, t.AskBps)
 			} else {
 				log.Printf("polymarket: best: none")
 			}
 		},
 		Logf:    log.Printf,
-		Metrics: m.Venue("polymarket"),
+		Metrics: m.Market(tick.Polymarket, assetID),
 	}
 	client.Run(ctx)
 }

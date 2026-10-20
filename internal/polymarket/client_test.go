@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/lucasjohn05/pmde/internal/metrics"
+	"github.com/lucasjohn05/pmde/internal/tick"
 )
 
 // fakeVenue is a websocket server that waits for each connection's
@@ -87,6 +88,7 @@ type recorder struct {
 	mu    sync.Mutex
 	logs  []string
 	bests []bestReport
+	ticks []tick.Tick
 	state bookState
 }
 
@@ -101,10 +103,11 @@ func (r *recorder) logf(format string, args ...any) {
 	r.logs = append(r.logs, fmt.Sprintf(format, args...))
 }
 
-func (r *recorder) onBest(bid, ask int, ok bool) {
+func (r *recorder) onTick(t tick.Tick) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.bests = append(r.bests, bestReport{bid, ask, ok})
+	r.bests = append(r.bests, bestReport{t.BidBps, t.AskBps, t.OK})
+	r.ticks = append(r.ticks, t)
 }
 
 // onFeed copies the session's book state; it runs on the book goroutine.
@@ -261,8 +264,8 @@ func TestClientRecoversFromReconnect(t *testing.T) {
 	}}
 	rec := &recorder{}
 	reg := prometheus.NewRegistry()
-	c := &Client{AssetID: captureAssetID, OnBest: rec.onBest, Logf: rec.logf, onFeed: rec.onFeed,
-		Metrics: metrics.New(reg).Venue("polymarket")}
+	c := &Client{AssetID: captureAssetID, OnTick: rec.onTick, Logf: rec.logf, onFeed: rec.onFeed,
+		Metrics: metrics.New(reg).Market("polymarket", captureAssetID)}
 	stop := runClient(t, v, c)
 
 	waitFor(t, 10*time.Second, "the second connection's book to match a clean replay", func() bool {
@@ -314,8 +317,17 @@ func TestClientRecoversFromReconnect(t *testing.T) {
 		}
 	}
 	if !sawTrusted || !sawUntrustedAfter {
-		t.Fatalf("OnBest reports %v: want the book reported untrusted across the reconnect", bests)
+		t.Fatalf("OnTick reports %v: want the book reported untrusted across the reconnect", bests)
 	}
+
+	// Every report is a Tick for this market, stamped with a time.
+	rec.mu.Lock()
+	for _, tk := range rec.ticks {
+		if tk.Venue != tick.Polymarket || tk.Market != captureAssetID || tk.Time.IsZero() {
+			t.Fatalf("Tick %+v: want venue %s, market %s, a non-zero time", tk, tick.Polymarket, captureAssetID)
+		}
+	}
+	rec.mu.Unlock()
 }
 
 // TestClientResyncsAfterDrop forces a drop through the real reader and
@@ -339,7 +351,7 @@ func TestClientResyncsAfterDrop(t *testing.T) {
 	c := &Client{
 		AssetID: captureAssetID,
 		Logf:    rec.logf,
-		Metrics: metrics.New(reg).Venue("polymarket"),
+		Metrics: metrics.New(reg).Market("polymarket", captureAssetID),
 		onQueue: func(q *Queue) { queue.CompareAndSwap(nil, q) }, // the first session's
 		onFeed: func(f *Feed) {
 			rec.onFeed(f)

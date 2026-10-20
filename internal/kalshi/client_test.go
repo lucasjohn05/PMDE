@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/lucasjohn05/pmde/internal/metrics"
+	"github.com/lucasjohn05/pmde/internal/tick"
 )
 
 const captureTicker = "KXFEDDECISION-26SEP-H25"
@@ -89,6 +90,7 @@ type recorder struct {
 	mu    sync.Mutex
 	logs  []string
 	bests []bestReport
+	ticks []tick.Tick
 	state bookState
 }
 
@@ -103,10 +105,11 @@ func (r *recorder) logf(format string, args ...any) {
 	r.logs = append(r.logs, fmt.Sprintf(format, args...))
 }
 
-func (r *recorder) onBest(bid, ask int, ok bool) {
+func (r *recorder) onTick(t tick.Tick) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.bests = append(r.bests, bestReport{bid, ask, ok})
+	r.bests = append(r.bests, bestReport{t.BidBps, t.AskBps, t.OK})
+	r.ticks = append(r.ticks, t)
 }
 
 // onFeed copies the session's book state; it runs on the book goroutine.
@@ -259,8 +262,8 @@ func TestClientRecoversFromSeqGapAndReconnect(t *testing.T) {
 	}}
 	rec := &recorder{}
 	reg := prometheus.NewRegistry()
-	c := &Client{Ticker: captureTicker, OnBest: rec.onBest, Logf: rec.logf, onFeed: rec.onFeed,
-		Metrics: metrics.New(reg).Venue("kalshi")}
+	c := &Client{Ticker: captureTicker, OnTick: rec.onTick, Logf: rec.logf, onFeed: rec.onFeed,
+		Metrics: metrics.New(reg).Market("kalshi", captureTicker)}
 	stop := runClient(t, v, c)
 
 	waitFor(t, 10*time.Second, "the third connection's book to match a clean replay", func() bool {
@@ -323,11 +326,20 @@ func TestClientRecoversFromSeqGapAndReconnect(t *testing.T) {
 		}
 	}
 	if !sawTrusted || !sawUntrustedAfter {
-		t.Fatalf("OnBest reports %v: want the book reported untrusted between sessions", bests)
+		t.Fatalf("OnTick reports %v: want the book reported untrusted between sessions", bests)
 	}
 	if lastTrusted != wantBest {
 		t.Fatalf("last trusted best = %+v, want clean replay's %+v", lastTrusted, wantBest)
 	}
+
+	// Every report is a Tick for this market, stamped with a time.
+	rec.mu.Lock()
+	for _, tk := range rec.ticks {
+		if tk.Venue != tick.Kalshi || tk.Market != captureTicker || tk.Time.IsZero() {
+			t.Fatalf("Tick %+v: want venue %s, market %s, a non-zero time", tk, tick.Kalshi, captureTicker)
+		}
+	}
+	rec.mu.Unlock()
 }
 
 // TestClientSnapshotTimeout covers a subscription that never produces a
@@ -344,7 +356,7 @@ func TestClientSnapshotTimeout(t *testing.T) {
 	rec := &recorder{}
 	reg := prometheus.NewRegistry()
 	c := &Client{Ticker: captureTicker, Logf: rec.logf, onFeed: rec.onFeed, snapshotTimeout: 200 * time.Millisecond,
-		Metrics: metrics.New(reg).Venue("kalshi")}
+		Metrics: metrics.New(reg).Market("kalshi", captureTicker)}
 	stop := runClient(t, v, c)
 
 	waitFor(t, 10*time.Second, "the second connection's book to match a clean replay", func() bool {
