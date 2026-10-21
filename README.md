@@ -522,6 +522,115 @@ Reaching step 4 takes a disk stalled for long enough to fill 1024 Ticks
 *and* a full reader queue behind them. At that point, resyncing is
 better than recording a history with silent gaps.
 
+## Deploying
+
+The laptop sleeps, drifts and can't send a background process Ctrl+C, so
+the service belongs on an always-on Linux host. `Dockerfile` and
+`deploy/compose.yaml` run it as a container that restarts itself, keeps
+its data on a named volume, and serves metrics on the host's loopback
+only.
+
+**What's in the image:** a static binary on distroless `static`: CA
+certificates for the `wss://` venues, no shell, no package manager,
+running as uid/gid 65532. About 23 MB. `pairs.yaml` is baked in as a
+default, but compose mounts the repo's copy over it, so changing pairs is
+an edit and a restart, not a rebuild.
+
+**Tested locally with Docker Desktop** (the same compose file):
+- all eight books synced;
+- `docker port` showed `9100/tcp -> 127.0.0.1:9100`;
+- `docker compose stop` exited 0 in 3s, and the volume held every
+  market's `partial` 1h bar (the clean-shutdown path, which `taskkill`
+  never exercised);
+- after an external SIGKILL of the process, Docker restarted the
+  container and all eight books resynced. (`docker kill` doesn't test
+  this: Docker counts it as a manual stop and doesn't restart.)
+
+### On a fresh droplet
+
+Ubuntu 24.04 on the smallest droplet is plenty: 8 connections, a few MB of
+data a day.
+
+1. **Install Docker Engine and the compose plugin**, following
+   https://docs.docker.com/engine/install/ubuntu/. Its packages enable
+   the Docker service at boot, which `restart: unless-stopped` relies on
+   after a reboot.
+
+2. **Check the clock is synchronized.** Every tick's `t` is this host's
+   clock, and lag is measured against it (see Storage):
+   ```
+   timedatectl          # want "System clock synchronized: yes" and "NTP service: active"
+   ```
+   Ubuntu's default `systemd-timesyncd` does this. If it says no, run
+   `sudo timedatectl set-ntp true`.
+
+3. **Firewall: SSH only.**
+   ```
+   sudo ufw allow OpenSSH && sudo ufw enable
+   ```
+   Docker-published ports bypass ufw. That's why compose binds metrics
+   to `127.0.0.1:9100` rather than relying on the firewall.
+
+4. **Get the code:**
+   ```
+   sudo git clone https://github.com/lucasjohn05/PMDE.git /opt/pmde
+   cd /opt/pmde
+   ```
+
+5. **Install the Kalshi key** where compose expects it, readable only by
+   the container's user (uid 65532). Without swarm, a compose file
+   secret is a bind mount that keeps the host file's owner and mode.
+   ```
+   # from your machine:
+   scp ~/.kalshi/private_key.pem <droplet>:/tmp/kalshi.pem
+   # on the droplet:
+   sudo install -d -m 0755 /etc/pmde
+   sudo install -o 65532 -g 65532 -m 0400 /tmp/kalshi.pem /etc/pmde/kalshi.pem
+   rm /tmp/kalshi.pem
+   ```
+
+6. **Set the key ID** in `deploy/.env` (gitignored, and excluded from the
+   image build):
+   ```
+   echo 'KALSHI_KEY_ID=<your key id>' | sudo tee deploy/.env
+   sudo chmod 600 deploy/.env
+   ```
+
+7. **Build and start:**
+   ```
+   sudo docker compose -f deploy/compose.yaml up -d --build
+   ```
+
+8. **Check it:**
+   ```
+   sudo docker compose -f deploy/compose.yaml logs -f        # "book synced", "divergence ..."
+   curl -s localhost:9100/metrics | grep -E '^(book_stale|divergence_mid_bps)'
+   ```
+   From your own machine, reach the metrics through an SSH tunnel:
+   `ssh -L 9100:localhost:9100 <droplet>`, then
+   http://localhost:9100/metrics.
+
+### Running it
+
+| Task | Command (from `/opt/pmde`, with `sudo`) |
+|---|---|
+| Logs | `docker compose -f deploy/compose.yaml logs -f` |
+| Change pairs | edit `pairs.yaml`, then `docker compose -f deploy/compose.yaml restart` |
+| Update the code | `git pull && docker compose -f deploy/compose.yaml up -d --build` |
+| Stop cleanly | `docker compose -f deploy/compose.yaml stop` (SIGTERM: writes partial windows, flushes, fsyncs) |
+| Find the data | `docker volume inspect pmde_data` (`Mountpoint`, usually `/var/lib/docker/volumes/pmde_data/_data`) |
+| Copy the data out | `docker run --rm -v pmde_data:/data:ro -v "$PWD":/out busybox tar czf /out/pmde-data.tgz -C /data .` |
+
+**Things that would lose data:**
+- `docker compose down -v`, which deletes the volume. A plain `down`, a
+  rebuild and a restart all keep it.
+- A crash or power loss loses about the last second of records and the
+  windows still open, the same as on any host (see Durability).
+
+Container logs are capped at 5 × 20 MB. Ticks aren't: there's no
+retention yet, but at a few MB a day that's years of disk on the
+smallest droplet.
+
 ## Venue differences
 
 The two venues don't expose the same shape of data, and the book code for
@@ -578,7 +687,8 @@ interface would mean encoding one venue's assumptions as the general case.
 
 ## Running it
 
-The service (both venues, every pair in `pairs.yaml`):
+To run it permanently, see Deploying above. Locally, the service (both
+venues, every pair in `pairs.yaml`):
 
 ```
 KALSHI_KEY_PATH=/path/to/private_key.pem
@@ -613,6 +723,9 @@ Metrics are on `http://localhost:9100/metrics` (`cmd/pmde`),
 
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
+Dockerfile                         static build on distroless (nonroot), runs cmd/pmde with /data and /etc/pmde/pairs.yaml
+.dockerignore                      keeps keys, .env, data/ and NOTES.md out of the build context
+deploy/compose.yaml                the deployment: restart unless-stopped, data on a named volume, key as a secret, metrics on 127.0.0.1:9100, capped logs
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
 cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks fanned out to the divergence tracker and the storage writer, index.json, /metrics
 cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics

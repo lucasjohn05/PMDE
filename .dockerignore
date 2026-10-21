@@ -1,0 +1,9 @@
+# Keep secrets, local data and local-only files out of the build context.
+# Patterns are relative to the context root; **/ matches at any depth.
+.git
+**/*.pem
+**/*.key
+**/.env
+data/
+NOTES.md
+**/*.exe

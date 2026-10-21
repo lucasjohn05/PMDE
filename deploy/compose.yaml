@@ -1,0 +1,53 @@
+# pmde on an always-on Linux host. See "Deploying" in the README.
+#
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# Needs, next to this file, a .env (gitignored) with:
+#   KALSHI_KEY_ID=<your key id>
+# and optionally KALSHI_KEY_FILE=<path to the private key on the host>
+# (default /etc/pmde/kalshi.pem).
+name: pmde
+
+services:
+  pmde:
+    build: ..
+    image: pmde:latest
+    # Back after a crash or a reboot (with the Docker service enabled at
+    # boot); stays down only after an explicit `docker compose stop`.
+    restart: unless-stopped
+    # docker stop sends SIGTERM; pmde then writes the open windows as
+    # partial and flushes/fsyncs its files. 30s is far more than it needs.
+    stop_grace_period: 30s
+    environment:
+      KALSHI_KEY_ID: ${KALSHI_KEY_ID:?set KALSHI_KEY_ID in deploy/.env}
+      KALSHI_KEY_PATH: /run/secrets/kalshi_key
+    secrets:
+      - kalshi_key
+    volumes:
+      # Ticks and rollups. A named volume survives rebuilds and
+      # `docker compose down` (but not `down -v`).
+      - data:/data
+      # The pair config, mounted so editing it needs a restart, not a
+      # rebuild.
+      - ../pairs.yaml:/etc/pmde/pairs.yaml:ro
+    ports:
+      # Metrics on the host's loopback only. Docker-published ports
+      # bypass ufw, so binding to 127.0.0.1 is what keeps /metrics off the
+      # internet. Reach it over SSH: ssh -L 9100:localhost:9100 <host>
+      - "127.0.0.1:9100:9100"
+    logging:
+      # The default json-file driver never rotates; cap it.
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+secrets:
+  kalshi_key:
+    # Without swarm, a file secret is a read-only bind mount that keeps the
+    # host file's owner and mode: make it readable by uid 65532 (the
+    # image's nonroot user) and nobody else.
+    file: ${KALSHI_KEY_FILE:-/etc/pmde/kalshi.pem}
+
+volumes:
+  data:
