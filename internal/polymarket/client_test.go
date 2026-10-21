@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/lucasjohn05/pmde/internal/metrics"
+	"github.com/lucasjohn05/pmde/internal/storage"
 	"github.com/lucasjohn05/pmde/internal/tick"
 )
 
@@ -320,14 +321,28 @@ func TestClientRecoversFromReconnect(t *testing.T) {
 		t.Fatalf("OnTick reports %v: want the book reported untrusted across the reconnect", bests)
 	}
 
-	// Every report is a Tick for this market, stamped with a time.
+	// Every report is a Tick for this market, stamped with a time and,
+	// since every Polymarket event here carries a timestamp, a venue
+	// time. A trusted one carries the sizes resting at its prices; the
+	// last one matches the clean replay's book.
 	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var lastOK tick.Tick
 	for _, tk := range rec.ticks {
 		if tk.Venue != tick.Polymarket || tk.Market != captureAssetID || tk.Time.IsZero() {
 			t.Fatalf("Tick %+v: want venue %s, market %s, a non-zero time", tk, tick.Polymarket, captureAssetID)
 		}
+		if tk.OK && (tk.BidSize <= 0 || tk.AskSize <= 0 || tk.VenueTime.IsZero()) {
+			t.Fatalf("trusted Tick %+v without sizes or a venue time", tk)
+		}
+		if tk.OK {
+			lastOK = tk
+		}
 	}
-	rec.mu.Unlock()
+	if lastOK.BidSize != want.bids[lastOK.BidBps] || lastOK.AskSize != want.asks[lastOK.AskBps] {
+		t.Fatalf("last trusted Tick sizes %d/%d, want the clean replay's %d/%d",
+			lastOK.BidSize, lastOK.AskSize, want.bids[lastOK.BidBps], want.asks[lastOK.AskBps])
+	}
 }
 
 // TestClientResyncsAfterDrop forces a drop through the real reader and
@@ -441,5 +456,83 @@ func TestBackoff(t *testing.T) {
 		if got := backoff(tt.attempt, high); got != tt.max-time.Nanosecond {
 			t.Errorf("backoff(%d) at highest jitter = %v, want just under %v", tt.attempt, got, tt.max)
 		}
+	}
+}
+
+// TestSlowStorageChain runs the slow-disk failure chain end to end: the
+// storage writer stops draining (a stuck disk), so its queue fills and
+// the client's OnTick blocks in Send; the book goroutine is stuck behind
+// it, so the reader->book queue fills and drops; when the disk recovers,
+// the book goroutine sees the drop, the book goes stale, and the client
+// resyncs from a fresh book event. Every link shows up in the metrics.
+func TestSlowStorageChain(t *testing.T) {
+	lines := captureLines(t)
+	want, _ := cleanState(t, lines)
+	book := firstBookEvent(t)
+
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	w, err := storage.NewWriter(t.TempDir(), m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for i := 0; i < storage.QueueSize; i++ { // the disk is stuck: the writer's queue is full
+		w.Send(ctx, tick.Tick{Venue: tick.Polymarket, Market: captureAssetID, Time: time.Now()})
+	}
+
+	var queue atomic.Pointer[Queue]
+	rec := &recorder{}
+	c := &Client{
+		AssetID: captureAssetID,
+		Logf:    rec.logf,
+		Metrics: m.Market(tick.Polymarket, captureAssetID),
+		OnTick:  func(tk tick.Tick) { w.Send(ctx, tk) },
+		onQueue: func(q *Queue) { queue.CompareAndSwap(nil, q) },
+		onFeed:  rec.onFeed,
+	}
+
+	const burst = QueueSize + 50
+	writerDone := make(chan struct{})
+	v := &fakeVenue{scripts: []func(*websocket.Conn){
+		func(conn *websocket.Conn) {
+			// The book event syncs the book; reporting it blocks in Send.
+			send(conn, [][]byte{book})
+			for i := 0; i < burst; i++ {
+				send(conn, [][]byte{priceChange(fmt.Sprintf("0.%02d", 10+i%50), "1")})
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for (queue.Load() == nil || queue.Load().Drops() < burst-QueueSize) && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			// The disk recovers.
+			go func() {
+				defer close(writerDone)
+				w.Run(ctx)
+			}()
+		},
+		func(conn *websocket.Conn) { send(conn, lines) },
+	}}
+	stop := runClient(t, v, c)
+
+	waitFor(t, 10*time.Second, "the second connection's book to match a clean replay", func() bool {
+		_, _, state := rec.snapshot()
+		return v.conns.Load() == 2 && matches(state, want)
+	})
+	stop()
+	cancel()
+	<-writerDone // the writer closes its files
+
+	logs, _, _ := rec.snapshot()
+	if reasons := resyncReasons(logs); len(reasons) < 1 || reasons[0] != ReasonDropped {
+		t.Fatalf("resync reasons = %v, want [%s ...]\n  %s", reasons, ReasonDropped, strings.Join(logs, "\n  "))
+	}
+	checkMetrics(t, reg, "polymarket", map[string]float64{"resyncs_total/" + ReasonDropped: 1})
+	if n := metricValue(t, reg, "dropped_messages_total", "venue", "polymarket"); n < burst-QueueSize {
+		t.Errorf("dropped_messages_total = %v, want at least %d", n, burst-QueueSize)
+	}
+	if s := metricValue(t, reg, "storage_blocked_seconds_total"); s <= 0 {
+		t.Errorf("storage_blocked_seconds_total = %v, want the time the book goroutine waited", s)
 	}
 }

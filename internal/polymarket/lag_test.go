@@ -89,3 +89,42 @@ func TestFeedLag(t *testing.T) {
 		t.Fatalf("after a step with no message: Lag() = %v, true; want no lag", lag)
 	}
 }
+
+// TestFeedStampAndSizes: unlike Lag, Stamp's venue time includes book
+// events (their timestamp is when the book last changed, which is the
+// right time for the state they produce). TopSizes gives the sizes behind
+// Best.
+func TestFeedStampAndSizes(t *testing.T) {
+	book := firstBookEvent(t)
+	var m struct {
+		Timestamp string `json:"timestamp"`
+	}
+	json.Unmarshal(book, &m)
+	bookMs, err := strconv.ParseInt(m.Timestamp, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := NewFeed(captureAssetID)
+	recv := time.UnixMilli(bookMs).Add(5 * time.Second)
+	f.HandleQueued(Queued{Raw: book, Recv: recv})
+	if r, ms := f.Stamp(); !r.Equal(recv) || ms != bookMs {
+		t.Fatalf("book: Stamp() = %v, %d; want %v, %d", r, ms, recv, bookMs)
+	}
+	if lag, ok := f.Lag(); ok {
+		t.Fatalf("book: Lag() = %v, true; want none", lag)
+	}
+
+	bid, ask, ok := f.Best()
+	bidSz, askSz := f.TopSizes()
+	wantBid, _ := f.book.BidSize(bid)
+	wantAsk, _ := f.book.AskSize(ask)
+	if !ok || bidSz != wantBid || askSz != wantAsk || bidSz == 0 || askSz == 0 {
+		t.Fatalf("TopSizes() = %d/%d at %d/%d, want %d/%d (nonzero)", bidSz, askSz, bid, ask, wantBid, wantAsk)
+	}
+
+	f.HandleQueued(Queued{Raw: priceChange("0.50", "10")}) // no timestamp, no Recv
+	if r, ms := f.Stamp(); !r.IsZero() || ms != 0 {
+		t.Fatalf("no timestamp: Stamp() = %v, %d; want zero", r, ms)
+	}
+}

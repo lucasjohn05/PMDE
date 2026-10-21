@@ -37,6 +37,16 @@ type Feed struct {
 	lag     time.Duration
 	hasLag  bool
 
+	// recv and stampMs describe the message the last HandleQueued or Next
+	// call handled; see Stamp.
+	recv    time.Time
+	stampMs int64
+
+	// msgMs is like venueMs but counts book events too: their timestamp
+	// is when the book last changed, which is wrong for measuring lag but
+	// right for stamping the state that book event produces.
+	msgMs int64
+
 	// Top of book as of the last time Handle reported a change.
 	bidBps, askBps int
 	bestOK         bool
@@ -55,7 +65,7 @@ func NewFeed(assetID string) *Feed {
 // snapshot on subscribe, in particular) and sometimes as a bare object;
 // Handle accepts both.
 func (f *Feed) Handle(raw []byte) (changed bool, err error) {
-	f.venueMs = 0
+	f.venueMs, f.msgMs = 0, 0
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var events []json.RawMessage
@@ -93,6 +103,7 @@ func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 	if f.venueMs > 0 && !m.Recv.IsZero() {
 		f.lag, f.hasLag = m.Recv.Sub(time.UnixMilli(f.venueMs)), true
 	}
+	f.recv, f.stampMs = m.Recv, f.msgMs
 	return changed, errors.Join(dropErr, err)
 }
 
@@ -106,6 +117,15 @@ func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 // measures the transport, not the book.
 func (f *Feed) Lag() (lag time.Duration, ok bool) {
 	return f.lag, f.hasLag
+}
+
+// Stamp describes the message the last HandleQueued or Next call
+// handled: when the reader received it, and the venue's own timestamp on
+// it (Unix ms, 0 if it had none). Both are zero if that call handled no
+// message. The client stamps the Tick it produces from this step with
+// them.
+func (f *Feed) Stamp() (recv time.Time, venueMs int64) {
+	return f.recv, f.stampMs
 }
 
 // Next is one step of the book goroutine's loop: it handles the next
@@ -128,6 +148,7 @@ func (f *Feed) Lag() (lag time.Duration, ok bool) {
 // carries a count the book has already seen.
 func (f *Feed) Next(q *Queue) (changed, ok bool, err error) {
 	f.lag, f.hasLag = 0, false
+	f.recv, f.stampMs = time.Time{}, 0
 	total := q.Drops()
 	select {
 	case m, open := <-q.Messages():
@@ -185,9 +206,10 @@ func (f *Feed) handleEvent(raw []byte) error {
 	// the event was sent: the snapshot on subscribe can be seconds or
 	// minutes old on a quiet market. That measures the market, not our
 	// ingest, so book events don't count toward lag.
-	if probe.EventType != "book" {
-		if ms, err := strconv.ParseInt(probe.Timestamp, 10, 64); err == nil && ms > f.venueMs {
-			f.venueMs = ms
+	if ms, err := strconv.ParseInt(probe.Timestamp, 10, 64); err == nil {
+		f.msgMs = max(f.msgMs, ms)
+		if probe.EventType != "book" {
+			f.venueMs = max(f.venueMs, ms)
 		}
 	}
 
@@ -250,6 +272,17 @@ func (f *Feed) Best() (bidBps, askBps int, ok bool) {
 // price_change has failed to apply or been dropped since the last one.
 func (f *Feed) Stale() bool {
 	return !f.synced
+}
+
+// TopSizes returns the sizes resting at the best bid and ask Best
+// reports, in centi-shares. Both are 0 when Best isn't ok.
+func (f *Feed) TopSizes() (bidSize, askSize int64) {
+	if !f.bestOK {
+		return 0, 0
+	}
+	bidSize, _ = f.book.BidSize(f.bidBps)
+	askSize, _ = f.book.AskSize(f.askBps)
+	return bidSize, askSize
 }
 
 // Book returns the underlying book, for inspection.

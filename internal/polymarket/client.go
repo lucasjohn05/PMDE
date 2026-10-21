@@ -61,8 +61,8 @@ type Client struct {
 	URL     string
 	AssetID string
 
-	// OnTick is called whenever the trusted top of book changes,
-	// including to OK=false when the book goes stale or the connection is
+	// OnTick is called whenever the trusted top of book changes (a best
+	// price or the size at one), including to OK=false when the book goes stale or the connection is
 	// lost. It runs on the book goroutine, so a slow OnTick backs up the
 	// queue (and, past QueueSize, makes the reader drop and the book
 	// resync).
@@ -81,8 +81,14 @@ type Client struct {
 
 	// Last top of book passed to OnTick. Touched by one session's book
 	// goroutine at a time, and by Run between sessions.
-	lastBid, lastAsk int
-	lastOK           bool
+	last top
+}
+
+// top is the part of a Tick that decides whether it changed.
+type top struct {
+	bid, ask     int
+	bidSz, askSz int64
+	ok           bool
 }
 
 // Run keeps the book live until ctx is cancelled. It never gives up:
@@ -95,7 +101,7 @@ func (c *Client) Run(ctx context.Context) {
 		}
 		start := time.Now()
 		reason, hadBook, err := c.session(ctx)
-		c.report(0, 0, false) // whatever ended the session, the book went with it
+		c.report(top{}, time.Time{}, 0) // whatever ended the session, the book went with it
 		c.Metrics.SetStale(true)
 		if ctx.Err() != nil {
 			return
@@ -266,32 +272,56 @@ func (c *Client) runBook(q *Queue, conn *websocket.Conn, synced *atomic.Bool, st
 			// broken stream, so it's drained unread.
 			staleReason <- f.StaleReason()
 			c.Metrics.SetStale(true)
-			c.report(f.Best())
+			c.emit(f)
 			conn.Close()
 			for range q.Messages() {
 			}
 			return
 		}
 
-		c.report(f.Best())
+		c.emit(f)
 		if !more {
 			return
 		}
 	}
 }
 
-// report passes the top of book to OnTick if it changed.
-func (c *Client) report(bidBps, askBps int, ok bool) {
-	if !ok {
-		bidBps, askBps = 0, 0
+// emit reports the Feed's top of book, stamped with the message the
+// last step handled.
+func (c *Client) emit(f *Feed) {
+	var t top
+	t.bid, t.ask, t.ok = f.Best()
+	t.bidSz, t.askSz = f.TopSizes()
+	recv, venueMs := f.Stamp()
+	c.report(t, recv, venueMs)
+}
+
+// report passes the top of book to OnTick if it changed. recv is the
+// receive time of the message behind it (zero means now); venueMs the
+// venue's timestamp on it (0 if none).
+func (c *Client) report(t top, recv time.Time, venueMs int64) {
+	if !t.ok {
+		t = top{}
 	}
-	if bidBps == c.lastBid && askBps == c.lastAsk && ok == c.lastOK {
+	if t == c.last {
 		return
 	}
-	c.lastBid, c.lastAsk, c.lastOK = bidBps, askBps, ok
-	if c.OnTick != nil {
-		c.OnTick(tick.Tick{Venue: tick.Polymarket, Market: c.AssetID, BidBps: bidBps, AskBps: askBps, OK: ok, Time: time.Now()})
+	c.last = t
+	if c.OnTick == nil {
+		return
 	}
+	if recv.IsZero() {
+		recv = time.Now()
+	}
+	var vt time.Time
+	if venueMs > 0 {
+		vt = time.UnixMilli(venueMs)
+	}
+	c.OnTick(tick.Tick{
+		Venue: tick.Polymarket, Market: c.AssetID,
+		BidBps: t.bid, AskBps: t.ask, BidSize: t.bidSz, AskSize: t.askSz, OK: t.ok,
+		Time: recv, VenueTime: vt,
+	})
 }
 
 func (c *Client) logf(format string, args ...any) {

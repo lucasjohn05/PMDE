@@ -138,6 +138,9 @@ func TestNilRecorders(t *testing.T) {
 	var p *Pair
 	p.Set(1, 2)
 	p.Clear()
+
+	var m *Metrics
+	m.StorageBlocked(time.Second)
 }
 
 // TestPair checks the divergence gauges: absent until set, and removed

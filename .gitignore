@@ -3,3 +3,4 @@
 .env
 pmde.exe
 *.exe
+data/

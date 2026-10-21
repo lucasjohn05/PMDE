@@ -1,5 +1,6 @@
-// Command pmde runs a venue client for every market in the pair config
-// and tracks each pair's divergence.
+// Command pmde runs a venue client for every market in the pair config,
+// tracks each pair's divergence, and stores every Tick with 1s/1m/1h
+// rollups.
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"github.com/lucasjohn05/pmde/internal/kalshi"
 	"github.com/lucasjohn05/pmde/internal/metrics"
 	"github.com/lucasjohn05/pmde/internal/polymarket"
+	"github.com/lucasjohn05/pmde/internal/storage"
 	"github.com/lucasjohn05/pmde/internal/tick"
 )
 
@@ -27,6 +29,7 @@ const (
 func main() {
 	configPath := flag.String("config", "pairs.yaml", "venue pair config (YAML)")
 	metricsAddr := flag.String("metrics-addr", ":9100", "address to serve Prometheus /metrics on")
+	dataDir := flag.String("data-dir", "data", "directory to store ticks and rollups in")
 	flag.Parse()
 
 	pairs, err := divergence.LoadPairs(*configPath)
@@ -54,15 +57,28 @@ func main() {
 	}
 	log.Printf("metrics: serving http://%s/metrics", addr)
 
-	// Every client's book goroutine sends its Ticks here. The send blocks
-	// when the channel is full (see divergence.TickQueueSize), except on
-	// shutdown, when the Tracker may already have stopped reading.
+	store, err := storage.NewWriter(*dataDir, m, log.Printf)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if err := storage.UpdateIndex(*dataDir, indexEntries(pairs)); err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	// The fan-out: every client's book goroutine sends each Tick to the
+	// divergence tracker and to the storage writer. Both sends block when
+	// their queue is full (CLAUDE.md: stages downstream of the book
+	// block), except on shutdown, when the stage may have stopped reading.
+	// A blocked send holds up that client's book goroutine; see the
+	// README's Storage section for where that leads.
 	ticks := make(chan tick.Tick, divergence.TickQueueSize)
 	send := func(t tick.Tick) {
 		select {
 		case ticks <- t:
 		case <-ctx.Done():
+			return
 		}
+		store.Send(ctx, t)
 	}
 
 	// One client (one connection) per distinct market: a market in
@@ -94,10 +110,32 @@ func main() {
 			wg.Go(func() { c.Run(ctx) })
 		}
 	}
-	log.Printf("tracking %d pair(s) over %d connection(s)", len(pairs), len(seen))
+	log.Printf("tracking %d pair(s) over %d connection(s); storing to %s", len(pairs), len(seen), *dataDir)
 
+	storeDone := make(chan struct{})
+	go func() {
+		defer close(storeDone)
+		store.Run(ctx)
+	}()
 	divergence.NewTracker(pairs, m, log.Printf).Run(ctx, ticks)
 	wg.Wait()
+	<-storeDone // the writer flushes and closes its files on the way out
+}
+
+// indexEntries maps each market directory to the pairs it's part of.
+func indexEntries(pairs []divergence.Pair) map[string]storage.IndexEntry {
+	entries := map[string]storage.IndexEntry{}
+	add := func(venue, market, pair string) {
+		key := storage.MarketDir(venue, market)
+		e := entries[key]
+		e.Venue, e.Market, e.Pairs = venue, market, append(e.Pairs, pair)
+		entries[key] = e
+	}
+	for _, p := range pairs {
+		add(tick.Kalshi, p.Kalshi, p.Name)
+		add(tick.Polymarket, p.Polymarket, p.Name)
+	}
+	return entries
 }
 
 // prefixed returns a Logf that tags each line with the market, since

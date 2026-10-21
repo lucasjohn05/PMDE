@@ -17,8 +17,9 @@ continuously.
 ## Status
 
 `cmd/pmde` is the service. It reads venue pairs from `pairs.yaml`, runs a
-client for every market in them, and tracks each pair's divergence (see
-Divergence below). `cmd/kalshi` and `cmd/polymarket` run a single
+client for every market in them, tracks each pair's divergence (see
+Divergence below), and stores every Tick with 1s/1m/1h rollups (see
+Storage below). `cmd/kalshi` and `cmd/polymarket` run a single
 venue's client against one hardcoded market, for debugging.
 
 Both venue clients connect over WebSocket (Kalshi's with a signed
@@ -52,7 +53,7 @@ Each binary serves Prometheus metrics on `/metrics`: message, drop,
 reconnect and resync counts, whether each book is stale, ingest lag, and
 (for `cmd/pmde`) each pair's divergence (see Metrics below).
 
-Not built yet: storage.
+All six planned steps are built.
 
 **Live runs.** `cmd/pmde` with the two October 2026 FOMC pairs in
 `pairs.yaml` synced all four books within a second and logged both
@@ -62,7 +63,10 @@ backoff growing to ~17s, and every book resynced on its own once the
 network was back. `cmd/kalshi` and `cmd/polymarket` still point at the
 September 2026 Fed market, which has resolved: Polymarket no longer has a
 book for it, so that client loops on the snapshot timeout, while Kalshi
-still serves a snapshot with no quotes.
+still serves a snapshot with no quotes. With storage, a 75-second run
+wrote the expected layout and `index.json` for all four markets, and a
+restart on the same directory appended to the same day's files with the
+first bars flagged `partial`. Every stored line parsed.
 
 ## Reconnect and resync
 
@@ -196,7 +200,8 @@ they can run side by side). The ingest series are labeled `venue` and
 `market` (the Kalshi ticker or Polymarket asset ID): `cmd/pmde` runs one
 client per market, and a per-venue `book_stale` would just be whichever
 client wrote last. Sum over `market` for per-venue totals. The divergence
-gauges are labeled `pair`.
+gauges are labeled `pair`. `storage_blocked_seconds_total` has no labels
+(see Storage).
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -208,6 +213,7 @@ gauges are labeled `pair`.
 | `ingest_lag_seconds` | histogram | Receive time minus the venue's timestamp on the message. Buckets from 1ms to ~16s, doubling. |
 | `divergence_mid_bps{pair}` | gauge | Kalshi mid minus Polymarket mid. Absent while either book is untrusted. |
 | `divergence_gap_bps{pair}` | gauge | Executable gap (see Divergence). Absent while either book is untrusted. |
+| `storage_blocked_seconds_total` | counter | Time book goroutines spent blocked handing Ticks to the storage writer. Rising means a slow disk is holding up the books. |
 
 **Reconnects and resyncs count different things.** A resync is the loss
 of a book; a reconnect is a dial. One seq gap is one resync and at least
@@ -324,6 +330,171 @@ Polymarket 86/87¢) and `fed-oct-2026-hike-25` at mid -100 (Kalshi 12/13¢,
 Polymarket 13/14¢). Both have a gap of 0: the venues sit a tick apart and
 touch, without crossing.
 
+## Storage
+
+`cmd/pmde` stores every Tick under `-data-dir` (default `data/`,
+gitignored), with 1s, 1m and 1h rollups computed as the Ticks are
+written.
+
+### Layout
+
+```
+data/
+  index.json                                   directory -> venue, market, pair names
+  kalshi/KXFEDDECISION-26OCT-H0/
+    2026-10-21.ticks.jsonl                     every Tick
+    2026-10-21.1s.jsonl                        1-second bars
+    2026-10-21.1m.jsonl                        1-minute bars
+    2026-10-21.1h.jsonl                        1-hour bars
+  polymarket/1110619025448142662...82993748/   (full asset ID)
+    ...
+```
+
+- **One file per record kind, per market, per UTC day.** Segments are
+  append-only: a day's file is only ever appended to, then left alone.
+  Days start at UTC midnight, so no window ever spans two files, and a
+  time range is just the right files. There's no automatic retention;
+  delete old days by hand.
+- **`index.json` maps each directory to its pairs.** Polymarket
+  directories are named by 77-digit asset IDs, so this is how you find
+  the right one. It's rewritten at startup (atomically, via a temp file
+  and rename) and merged with what's there, so directories written under
+  an older config stay explained after `pairs.yaml` changes.
+- **Directory names are checked.** A market ID is used as a directory
+  name only if it's letters, digits, `.`, `_` and `-` (and not `.`/`..`),
+  so a bad config entry can't write outside the data directory.
+
+### Records
+
+JSON Lines (one JSON object per line). Venue and market come from the
+path.
+
+```
+ticks:  {"t":1792613520960,"vt":1792613518936,"bid":1100,"ask":1200,"bid_sz":14022026,"ask_sz":5858113,"ok":true}
+        {"t":1792613530000,"ok":false}
+bars:   {"t":1792613460000,"n":9,"bid":[8600,8600,8600,8600],"ask":[8700,8700,8700,8700],"stale_ms":0,"ok":true}
+```
+
+**Two timestamps on a tick:**
+- **`t`, the local receive time (Unix ms, UTC).** It's when the reader
+  read the message that produced the Tick off the socket, stamped before
+  queueing. A Tick with no message behind it (a session ending, a drop
+  noticed while idle) gets the time it was produced.
+- **`vt`, the venue's timestamp on that message**, when it has one:
+  Kalshi's `ts_ms` on deltas (snapshots have none), and Polymarket's
+  `timestamp` on every event. For a Polymarket `book` event that's when
+  the book last changed, which is right for the state it describes, even
+  though it's excluded from `ingest_lag_seconds`. `vt` is omitted when
+  there isn't one.
+- **Windows, days and replay all use `t`.** Both venues' `t` come from
+  one clock (this host's), so two markets' files merge by `t` into the
+  order the service saw them, and replaying that through the divergence
+  `Tracker` reproduces exactly the divergence it computed live
+  (`TestDivergenceRecomputedFromDisk` does that). `vt` is on two
+  different venue clocks, and neither is this host's.
+- **Neither timestamp is corrected.** On the dev machine `t - vt` read
+  ~2s in one run: the local clock had drifted 1.87s fast (Windows hadn't
+  synced it since the day before), on top of ~100ms of real lag. Keeping
+  both raw means skew can be measured and allowed for later rather than
+  baked in.
+
+**Prices and sizes:** prices are integer bps, as everywhere. `bid_sz` and
+`ask_sz` are the sizes resting at the best bid and ask, in hundredths of
+the venue's unit so they stay exact integers (`"140256.51"` is
+`14025651`):
+- **Kalshi:** contracts. The ask size is the "no" size resting at
+  `10000 - ask`, the no bid that makes that yes ask.
+- **Polymarket:** shares.
+- One unit pays $1 if the outcome happens on either venue.
+
+Prices and sizes appear only when `ok`; `{"t":...,"ok":false}` means
+there's no trusted book from then on. Since Ticks now carry sizes, a
+client emits one when a top-of-book *size* changes too, not only a price.
+The divergence tracker recomputes on those and logs only if the
+divergence moved.
+
+### Rollups
+
+Each bar summarizes the top of book over one window: `bid` and `ask` are
+`[open, high, low, close]`, `n` is the number of Ticks in it, `stale_ms`
+how long it had no trusted book, and `ok` whether it ended trusted.
+
+- **Bars describe the book, not just the Ticks in the window.** A window
+  opens on the state carried in from before it, so a 1m bar with one Tick
+  still has the right open.
+- **High and low only count trusted periods.** A window that was
+  untrusted throughout has `"bid":null,"ask":null`.
+- **Sparse.** A window is only written if a Tick landed in it. A missing
+  bar means nothing changed: it's the previous bar's close (and `ok`)
+  carried forward. On a quiet market, writing every 1s bar would be
+  86,400 lines a day per market saying nothing.
+- **Closed by a timer.** A once-a-second flush closes windows that ended
+  at least a second ago (the grace lets a Tick still in the queues land in
+  its own window). Without it, the last bar before a quiet hour wouldn't
+  be written until the next Tick.
+- **The clock can step back** (an NTP correction). A late Tick keeps its
+  raw `t` in the tick file but goes into the window that's open, and into
+  today's file, never reopening a closed window or an earlier day.
+- **`partial`.** The first window after startup is flagged
+  `"partial":true` (the state before it is unknown), and so is any window
+  cut short by a clean shutdown. A restart inside a window can therefore
+  leave two partial bars with the same `t`, covering different parts of
+  it.
+
+### Durability
+
+- **Records are buffered, then flushed and fsynced once a second** and on
+  shutdown. A crash loses at most about a second of records plus the
+  windows still open, the same as a kill. This was checked live: after a
+  forced kill, every file ended on a complete line and the next run
+  appended cleanly.
+- **A torn last line is cut off.** If a crash leaves a file ending in a
+  partial line, the writer cuts it off when it reopens the file (and logs
+  it), so the next record starts on its own line. Readers (`ReadTicks`,
+  `ReadBars`) also skip an unparseable *last* line, and treat a bad line
+  anywhere else as corruption.
+
+### When the disk is slow
+
+The storage stage blocks rather than drops, per CLAUDE.md. A dropped Tick
+would leave a wrong top of book in the record with nothing to say so. The
+cost is that a slow disk propagates back up the pipeline, one bounded
+queue at a time:
+
+1. **The writer blocks** on a slow write or fsync, and its queue
+   (`storage.QueueSize`, 1024 Ticks) fills.
+2. **The fan-out in `cmd/pmde` blocks.** Each book goroutine's `OnTick`
+   sends the Tick to the divergence tracker, then to the writer; the
+   second send waits for room.
+3. **The book goroutines block** inside `OnTick`, so they stop draining
+   their reader queues.
+4. **The reader queues fill and drop.** Readers never block (the
+   websocket must keep being read), so once a reader's queue is full,
+   messages are dropped and counted.
+5. **The books go stale.** When the disk catches up and a book goroutine
+   gets going again, it sees the drop count has moved and marks its book
+   stale.
+6. **The clients resync** from a fresh snapshot. If the disk is still
+   slow, the cycle repeats, so the books flap between stale and synced
+   until the disk recovers. They never serve a book with a missing delta.
+
+**What shows up in metrics, in order:**
+- `storage_blocked_seconds_total` rising;
+- then `dropped_messages_total` and `book_stale` per market;
+- then `resyncs_total{reason="dropped"}`.
+
+A single wait of a second or more is also logged ("a polymarket tick
+waited 1.2s for room in the storage queue"). `TestSlowStorageChain` runs
+the whole chain through a real client, writer and fake venue and checks
+each of those metrics.
+
+**Why it's acceptable.** Appending a Tick is a buffered write, and Ticks
+only come on top-of-book changes, so the queue absorbs ordinary fsync
+pauses easily (`storage_blocked_seconds_total` stayed 0 in live runs).
+Reaching step 4 takes a disk stalled for long enough to fill 1024 Ticks
+*and* a full reader queue behind them. At that point, resyncing is
+better than recording a history with silent gaps.
+
 ## Venue differences
 
 The two venues don't expose the same shape of data, and the book code for
@@ -385,7 +556,7 @@ The service (both venues, every pair in `pairs.yaml`):
 ```
 KALSHI_KEY_PATH=/path/to/private_key.pem
 KALSHI_KEY_ID=<your key id>
-go run ./cmd/pmde                       # -config pairs.yaml -metrics-addr :9100
+go run ./cmd/pmde                       # -config pairs.yaml -metrics-addr :9100 -data-dir data
 ```
 
 Single-venue debug clients, each against one hardcoded market. Kalshi needs an API key:
@@ -416,11 +587,16 @@ Metrics are on `http://localhost:9100/metrics` (`cmd/pmde`),
 ```
 CLAUDE.md                          engineering constraints and working style for this repo
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
-cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks -> divergence tracker, /metrics
+cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks fanned out to the divergence tracker and the storage writer, index.json, /metrics
 cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics
 cmd/polymarket/main.go             debug: one polymarket.Client on a hardcoded asset, logs best bid/ask changes, /metrics
 pairs.yaml                         the hand-written venue pairs (October 2026 FOMC: hold, hike 25)
-internal/tick/tick.go              Tick: venue, market, best bid/ask in bps, trusted or not; what clients emit
+internal/tick/tick.go              Tick: venue, market, best bid/ask (bps) and sizes, trusted or not, receive and venue times; what clients emit
+internal/storage/storage.go        Writer: per-market JSONL segments, 1s/1m/1h rollups at write time, the 1s flush, Send (blocking, counts time blocked)
+internal/storage/segment.go        append-only segment files, torn-tail repair, record types, ReadTicks/ReadBars
+internal/storage/index.go          index.json: directory -> venue, market, pair names (merged, atomic)
+internal/storage/storage_test.go   exact tick lines, bars over a hand-worked sequence, all-stale bars, clock steps back, day rollover, torn tail, unsafe names, blocking Send, Run, index
+internal/storage/replay_test.go    divergence recomputed from the stored files equals the live tracker's, step by step
 internal/divergence/config.go      pair config loading and validation (strict YAML)
 internal/divergence/config_test.go valid config, every rejection, and the committed pairs.yaml
 internal/divergence/divergence.go  Compute (mid divergence, executable gap), Tracker (latest Tick per market, recompute affected pairs), TickQueueSize
@@ -432,7 +608,7 @@ internal/kalshi/client.go          sessions (dial, subscribe, reader + book goro
 internal/kalshi/client_test.go     against a local websocket server: seq gap then mid-stream hang-up then full replay; snapshot timeout; backoff; metric values
 internal/kalshi/feed.go            message dispatch, staleness (no snapshot yet / seq gap / drop), top-of-book change detection, Next (the book loop step, incl. idle drop check)
 internal/kalshi/feed_test.go       fixture replay, injected seq gap, synthetic top-of-book moves
-internal/kalshi/lag_test.go        Feed.Lag: ts_ms on deltas, none on snapshots, negative skew, cleared by a step with no message
+internal/kalshi/lag_test.go        Feed.Lag: ts_ms on deltas, none on snapshots, negative skew, cleared by a step with no message; Feed.Stamp and TopSizes
 internal/kalshi/queue.go           bounded non-blocking reader->book queue, drop count carried on each message, QueueSize
 internal/kalshi/queue_test.go      fixture replay through a 2-slot queue forcing drops; stale mark lands at the drop's position
 internal/kalshi/next_test.go       Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)
@@ -441,10 +617,10 @@ internal/metrics/metrics_test.go   series exist up front, values recorded, pair 
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
 internal/polymarket/client.go      as kalshi's, plus the app-level PING heartbeat
-internal/polymarket/client_test.go against a local websocket server: mid-stream hang-up then full replay; forced drop through the real goroutines; backoff; metric values
+internal/polymarket/client_test.go against a local websocket server: mid-stream hang-up then full replay; forced drop through the real goroutines; the slow-storage chain end to end; backoff; metric values
 internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection, Next (as kalshi)
 internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves
-internal/polymarket/lag_test.go    Feed.Lag: timestamp on price_change/last_trade_price, not book events, newest in an array
+internal/polymarket/lag_test.go    Feed.Lag: timestamp on price_change/last_trade_price, not book events, newest in an array; Feed.Stamp (book events included) and TopSizes
 internal/polymarket/queue.go       same queue as kalshi's, duplicated per the no-shared-venue-code rule
 internal/polymarket/queue_test.go  fixture replay through a 2-slot queue forcing drops; a pre-drop book event doesn't clear staleness
 internal/polymarket/next_test.go   Feed.Next: drop then silence, drop at close, real reader/book goroutines (for -race)

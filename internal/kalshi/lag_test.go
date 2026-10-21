@@ -79,3 +79,64 @@ func TestFeedLag(t *testing.T) {
 		t.Fatalf("after a step with no message: Lag() = %v, true; want no lag", lag)
 	}
 }
+
+// TestFeedStampAndSizes: Stamp reports the handled message's receive and
+// venue times (none for a snapshot, none after a step with no message),
+// and TopSizes the sizes behind Best, the ask's being the "no" size at
+// 10000-ask.
+func TestFeedStampAndSizes(t *testing.T) {
+	var snapshot, delta []byte
+	for _, line := range captureLines(t) {
+		switch messageType(t, line) {
+		case "orderbook_snapshot":
+			snapshot = line
+		case "orderbook_delta":
+			if delta == nil {
+				delta = line
+			}
+		}
+	}
+
+	var f Feed
+	if bid, ask := f.TopSizes(); bid != 0 || ask != 0 {
+		t.Fatalf("TopSizes before any snapshot = %d/%d, want 0/0", bid, ask)
+	}
+
+	recv := time.Date(2026, 9, 11, 15, 0, 0, 0, time.UTC)
+	f.HandleQueued(Queued{Raw: snapshot, Recv: recv})
+	if r, ms := f.Stamp(); !r.Equal(recv) || ms != 0 {
+		t.Fatalf("snapshot: Stamp() = %v, %d; want %v, 0", r, ms, recv)
+	}
+	bid, ask, ok := f.Best()
+	bidSz, askSz := f.TopSizes()
+	wantBid, _ := f.book.YesSize(bid)
+	wantAsk, _ := f.book.NoSize(10000 - ask)
+	if !ok || bidSz != wantBid || askSz != wantAsk || bidSz == 0 || askSz == 0 {
+		t.Fatalf("TopSizes() = %d/%d at %d/%d, want %d/%d (nonzero)", bidSz, askSz, bid, ask, wantBid, wantAsk)
+	}
+
+	f.HandleQueued(Queued{Raw: delta, Recv: recv.Add(time.Second)})
+	if r, ms := f.Stamp(); !r.Equal(recv.Add(time.Second)) || ms != tsOfDelta(t, delta) {
+		t.Fatalf("delta: Stamp() = %v, %d; want %v, %d", r, ms, recv.Add(time.Second), tsOfDelta(t, delta))
+	}
+
+	q := NewQueue(1)
+	q.Close()
+	nextWithin(t, &f, q, time.Second)
+	if r, ms := f.Stamp(); !r.IsZero() || ms != 0 {
+		t.Fatalf("after a step with no message: Stamp() = %v, %d; want zero", r, ms)
+	}
+}
+
+func tsOfDelta(t *testing.T, raw []byte) int64 {
+	t.Helper()
+	var m struct {
+		Msg struct {
+			TsMs int64 `json:"ts_ms"`
+		} `json:"msg"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m.Msg.TsMs
+}

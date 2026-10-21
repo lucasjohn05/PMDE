@@ -332,14 +332,37 @@ func TestClientRecoversFromSeqGapAndReconnect(t *testing.T) {
 		t.Fatalf("last trusted best = %+v, want clean replay's %+v", lastTrusted, wantBest)
 	}
 
-	// Every report is a Tick for this market, stamped with a time.
+	// Every report is a Tick for this market, stamped with a time. A
+	// trusted one carries the sizes resting at its prices; the last one
+	// matches the clean replay's book (the ask's size is the "no" size
+	// that makes it). Ticks from deltas carry Kalshi's ts_ms as their
+	// venue time.
 	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var lastOK tick.Tick
+	sawVenueTime := false
 	for _, tk := range rec.ticks {
 		if tk.Venue != tick.Kalshi || tk.Market != captureTicker || tk.Time.IsZero() {
 			t.Fatalf("Tick %+v: want venue %s, market %s, a non-zero time", tk, tick.Kalshi, captureTicker)
 		}
+		if tk.OK && (tk.BidSize <= 0 || tk.AskSize <= 0) {
+			t.Fatalf("trusted Tick %+v without sizes", tk)
+		}
+		if !tk.OK && (tk.BidBps|tk.AskBps != 0 || tk.BidSize|tk.AskSize != 0) {
+			t.Fatalf("untrusted Tick %+v carries a top of book", tk)
+		}
+		if tk.OK {
+			lastOK = tk
+		}
+		sawVenueTime = sawVenueTime || !tk.VenueTime.IsZero()
 	}
-	rec.mu.Unlock()
+	if lastOK.BidSize != want.yes[lastOK.BidBps] || lastOK.AskSize != want.no[10000-lastOK.AskBps] {
+		t.Fatalf("last trusted Tick sizes %d/%d, want the clean replay's %d/%d",
+			lastOK.BidSize, lastOK.AskSize, want.yes[lastOK.BidBps], want.no[10000-lastOK.AskBps])
+	}
+	if !sawVenueTime {
+		t.Fatalf("no Tick carried a venue time")
+	}
 }
 
 // TestClientSnapshotTimeout covers a subscription that never produces a

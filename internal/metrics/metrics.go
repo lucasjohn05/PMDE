@@ -42,6 +42,8 @@ type Metrics struct {
 
 	divMid *prometheus.GaugeVec
 	divGap *prometheus.GaugeVec
+
+	storageBlocked prometheus.Counter
 }
 
 // New creates the metrics and registers them on reg.
@@ -82,7 +84,11 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help: "Executable gap in bps: max(Kalshi bid - Polymarket ask, Polymarket bid - Kalshi ask). Positive means the books cross. Absent while either book has no trusted top of book.",
 		}, []string{"pair"}),
 	}
-	reg.MustRegister(m.messages, m.dropped, m.reconnect, m.resyncs, m.stale, m.lag, m.divMid, m.divGap)
+	m.storageBlocked = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "storage_blocked_seconds_total",
+		Help: "Time book goroutines spent blocked sending Ticks to the storage writer because its queue was full. Rising means the disk is slow and the books are being held up.",
+	})
+	reg.MustRegister(m.messages, m.dropped, m.reconnect, m.resyncs, m.stale, m.lag, m.divMid, m.divGap, m.storageBlocked)
 	return m
 }
 
@@ -203,6 +209,14 @@ func (p *Pair) Clear() {
 	}
 	p.m.divMid.DeleteLabelValues(p.name)
 	p.m.divGap.DeleteLabelValues(p.name)
+}
+
+// StorageBlocked adds d to storage_blocked_seconds_total. A nil *Metrics
+// records nothing.
+func (m *Metrics) StorageBlocked(d time.Duration) {
+	if m != nil {
+		m.storageBlocked.Add(d.Seconds())
+	}
 }
 
 // NewRegistry returns a registry with the Go runtime and process
