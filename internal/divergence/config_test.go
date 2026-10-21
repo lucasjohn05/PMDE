@@ -18,6 +18,9 @@ pairs:
   - name: hike
     kalshi: KX-H25 # trailing comment
     polymarket: ` + assetB + ` # unquoted keeps every digit
+    notes: |
+      Rules differ on rounding.
+      Second line.
   - name: hold-again-other-asset
     kalshi: KX-H0
     polymarket: "` + assetB + `"
@@ -26,9 +29,9 @@ pairs:
 		t.Fatal(err)
 	}
 	want := []Pair{
-		{"hold", "KX-H0", assetA},
-		{"hike", "KX-H25", assetB},
-		{"hold-again-other-asset", "KX-H0", assetB},
+		{"hold", "KX-H0", assetA, ""},
+		{"hike", "KX-H25", assetB, "Rules differ on rounding.\nSecond line.\n"},
+		{"hold-again-other-asset", "KX-H0", assetB, ""},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d pairs, want %d: %+v", len(got), len(want), got)

@@ -24,6 +24,11 @@ type Pair struct {
 	// tokens; picking the wrong one compares a price against its
 	// complement.
 	Polymarket string `yaml:"polymarket"`
+
+	// Notes is free text for whoever maintains the pair: typically how
+	// the two venues' resolution rules differ. Optional; the code doesn't
+	// read it.
+	Notes string `yaml:"notes"`
 }
 
 type config struct {

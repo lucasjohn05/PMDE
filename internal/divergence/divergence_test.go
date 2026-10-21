@@ -98,11 +98,11 @@ func gauge(t *testing.T, reg *prometheus.Registry, name, pair string) (float64, 
 
 func TestTracker(t *testing.T) {
 	pairs := []Pair{
-		{"hold", "K-H0", "111"},
-		{"hike", "K-H25", "222"},
+		{"hold", "K-H0", "111", ""},
+		{"hike", "K-H25", "222", ""},
 		// Shares the Kalshi market with "hold": one Kalshi Tick must
 		// update both.
-		{"hold-vs-hike", "K-H0", "222"},
+		{"hold-vs-hike", "K-H0", "222", ""},
 	}
 	reg := prometheus.NewRegistry()
 	logs := &logRec{}
@@ -196,7 +196,7 @@ func TestTracker(t *testing.T) {
 func TestTrackerRun(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	tr := NewTracker([]Pair{{"hold", "K", "1"}}, m, nil)
+	tr := NewTracker([]Pair{{"hold", "K", "1", ""}}, m, nil)
 
 	ticks := make(chan tick.Tick, TickQueueSize)
 	ctx, cancel := context.WithCancel(context.Background())

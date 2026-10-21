@@ -283,8 +283,24 @@ pairs:
 ```
 
 Each pair is a Kalshi market ticker and the Polymarket asset (token) ID of
-the outcome that means the same as Kalshi's "yes". Pairs are written by
-hand; nothing matches markets automatically. The loader is strict: an
+the outcome that means the same as Kalshi's "yes", plus optional `notes`.
+Pairs are written by hand; nothing matches markets automatically.
+
+**Each pair's `notes` records how the two venues' resolution rules
+differ**, read from Kalshi's market rules and contract terms and from
+Polymarket's market description. For the Fed decision pairs:
+- **Measure:** Kalshi resolves on "the target federal funds rate range",
+  Polymarket on its upper bound.
+- **Odd-sized moves:** Polymarket rounds up to the nearest 25 bps; Kalshi
+  has no rounding rule. That's the one realistic way a hike-25 pair could
+  resolve differently: a 12.5 bps hike.
+- **No decision:** both resolve to no change, but on different timelines.
+- **Trading end:** Kalshi stops trading at 1:55 PM ET on decision day,
+  before the 2:00 PM ET statement, while Polymarket trades on until it
+  resolves. Divergence after Kalshi's close compares a frozen book with a
+  live one.
+- **Settlement:** by the exchange on Kalshi; through the UMA oracle on
+  Polymarket. The loader is strict: an
 unknown key (a typo like `polymarkt`) is an error rather than an empty
 field, and so is a duplicate name, a duplicate pairing, or a `0x...`
 condition ID where the decimal token ID belongs. A market can appear in
@@ -329,6 +345,17 @@ can't hang on a tracker that has stopped.
 Polymarket 86/87¢) and `fed-oct-2026-hike-25` at mid -100 (Kalshi 12/13¢,
 Polymarket 13/14¢). Both have a gap of 0: the venues sit a tick apart and
 touch, without crossing.
+
+**Live, 2026-10-21, with the December pairs added:** both December pairs
+*cross*, by 200 bps:
+- `fed-dec-2026-hold`: Kalshi 21/22¢ vs Polymarket 18/19¢. Buying "no
+  change" on Polymarket at 19¢ and selling on Kalshi at 21¢ nets 2¢ per
+  contract before fees.
+- `fed-dec-2026-hike-25`: Kalshi 75/76¢ vs Polymarket 78/79¢, the mirror
+  image.
+
+Whether 2¢ survives both venues' fees, and the 12.5 bps rounding
+difference in the notes, is what the analysis is for.
 
 ## Storage
 
@@ -590,7 +617,7 @@ CLAUDE.md                          engineering constraints and working style for
 cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks fanned out to the divergence tracker and the storage writer, index.json, /metrics
 cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics
 cmd/polymarket/main.go             debug: one polymarket.Client on a hardcoded asset, logs best bid/ask changes, /metrics
-pairs.yaml                         the hand-written venue pairs (October 2026 FOMC: hold, hike 25)
+pairs.yaml                         the hand-written venue pairs (October and December 2026 FOMC: hold, hike 25), with resolution-rule differences in notes
 internal/tick/tick.go              Tick: venue, market, best bid/ask (bps) and sizes, trusted or not, receive and venue times; what clients emit
 internal/storage/storage.go        Writer: per-market JSONL segments, 1s/1m/1h rollups at write time, the 1s flush, Send (blocking, counts time blocked)
 internal/storage/segment.go        append-only segment files, torn-tail repair, record types, ReadTicks/ReadBars

@@ -8,19 +8,110 @@
 #               same as Kalshi's "yes" (each Polymarket market has two
 #               tokens: take the one for the matching outcome, usually
 #               "Yes"). Not the market's 0x... condition ID.
+#   notes:      optional free text; here, how the venues' resolution rules
+#               differ, so whoever reads the divergence knows what it
+#               compares
 #
-# Check that the two venues' resolution rules really describe the same
-# outcome before adding a pair; a near-match is a different market.
+# Read both venues' resolution rules before adding a pair; a near-match is
+# a different market. Sources used for the notes below (read 2026-10-21):
+#   Kalshi:     market rules_primary/rules_secondary from the trade API, and
+#               the series contract terms,
+#               https://assets.kalshi.com/contract_terms/FEDDECISION.pdf
+#   Polymarket: the event/market description from the Gamma API (the
+#               October and December texts are identical apart from the
+#               month and meeting dates)
 
 pairs:
-  # FOMC decision, October 27-28 2026. Kalshi event KXFEDDECISION-26OCT;
-  # Polymarket event "Fed Decision in October?".
+  # FOMC decision, October 27-28 2026 (statement Oct 28, 2:00 PM ET).
+  # Kalshi event KXFEDDECISION-26OCT; Polymarket "Fed Decision in October?".
+  # Keep until the meeting has resolved on both venues: the decision is
+  # the price-discovery event most worth recording. Remove after Oct 28.
   - name: fed-oct-2026-hold
     kalshi: KXFEDDECISION-26OCT-H0 # Fed maintains rate
     # "Will there be no change in Fed interest rates after the October 2026 meeting?" (Yes)
     polymarket: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
+    notes: |
+      Same outcome in every normal case: the FOMC leaves the target range
+      unchanged. Differences:
+      - Measure: Kalshi resolves on the change to "the target federal
+        funds rate range" (no bound named); Polymarket on the change to its
+        upper bound. They only diverge if the range's width changes.
+      - Odd-sized moves: Polymarket rounds up to the nearest 25 bps (a
+        12.5 bps hike counts as 25 bps, so "no change" is No on both);
+        Kalshi states no rounding rule.
+      - No decision: Kalshi resolves "maintains" Yes if the meeting is
+        cancelled; Polymarket resolves "No change" only if no statement is
+        out by the end date of the next scheduled meeting. Same answer,
+        possibly weeks apart.
+      - Trading end: Kalshi's last trade is 1:55 PM ET on decision day
+        (contract terms; the API's close_time says 1:59 PM ET), before the
+        2:00 PM ET statement. Polymarket trades through the announcement
+        until it resolves. Divergence after Kalshi's close compares a
+        frozen book with a live one and isn't meaningful.
+      - Settlement: Kalshi settles from the Fed's release by the day after
+        expiration (a Market Outcome Review can delay it); Polymarket
+        resolves through UMA's optimistic oracle (bonded proposal,
+        disputable).
 
   - name: fed-oct-2026-hike-25
     kalshi: KXFEDDECISION-26OCT-H25 # Hike 25bps
     # "Will the Fed increase interest rates by 25 bps after the October 2026 meeting?" (Yes)
     polymarket: "55159722761418013044126414276680602270318000841690689684819994448621694923050"
+    notes: |
+      Same outcome for a standard 25 bps hike. Both mean exactly 25: a
+      larger hike resolves Kalshi's separate "Hike >25bps" and
+      Polymarket's "50+ bps" instead. Differences:
+      - Odd-sized moves: this is where they can split. A 12.5 bps hike
+        resolves Polymarket's "25 bps" Yes (it rounds up to the nearest
+        25); Kalshi states no rounding rule, and a 12.5 bps hike isn't any
+        of its listed outcomes, so it would fall to Kalshi's discretion
+        (Rulebook 6.3(b)). A 37.5 bps hike rounds to 50 on Polymarket and
+        is ">25" on Kalshi: No on both here.
+      - Measure: Kalshi "target range" vs Polymarket "upper bound", as for
+        the hold pair.
+      - No decision: both resolve to no change, so No here; timing
+        differs as for the hold pair.
+      - Trading end: Kalshi stops at 1:55 PM ET on decision day, before
+        the 2:00 PM ET statement; Polymarket trades on. Post-close
+        divergence isn't meaningful.
+      - Settlement: Kalshi exchange settlement vs Polymarket UMA oracle.
+
+  # FOMC decision, December 8-9 2026 (statement Dec 9, 2:00 PM ET).
+  # Kalshi event KXFEDDECISION-26DEC; Polymarket "Fed Decision in December?".
+  - name: fed-dec-2026-hold
+    kalshi: KXFEDDECISION-26DEC-H0 # Fed maintains rate
+    # "Will there be no change in Fed interest rates after the December 2026 meeting?" (Yes)
+    polymarket: "42865728742506860386768556888821101266630139112044622335353850919229585308601"
+    notes: |
+      Same rules as fed-oct-2026-hold, for the December 9 decision.
+      Same outcome in every normal case. Differences:
+      - Measure: Kalshi "target federal funds rate range" (no bound named)
+        vs Polymarket's upper bound.
+      - Odd-sized moves: Polymarket rounds up to the nearest 25 bps;
+        Kalshi states no rounding rule. "No change" is No on both for any
+        nonzero move.
+      - No decision: Kalshi "maintains" Yes on cancellation; Polymarket
+        "No change" only once the next scheduled meeting's end date passes
+        with no statement.
+      - Trading end: Kalshi's last trade is 1:55 PM ET on Dec 9 (API
+        close_time 1:59 PM ET), before the 2:00 PM ET statement;
+        Polymarket trades on until resolution. Post-close divergence isn't
+        meaningful.
+      - Settlement: Kalshi exchange settlement vs Polymarket UMA oracle.
+
+  - name: fed-dec-2026-hike-25
+    kalshi: KXFEDDECISION-26DEC-H25 # Hike 25bps
+    # "Will the Fed increase interest rates by 25 bps after the December 2026 meeting?" (Yes)
+    polymarket: "111662129652828266889360374468657435151479595863413519836161861837506140152890"
+    notes: |
+      Same rules as fed-oct-2026-hike-25, for the December 9 decision.
+      Both mean exactly 25 bps. Differences:
+      - Odd-sized moves: a 12.5 bps hike is Yes on Polymarket (rounds up
+        to 25) but has no listed Kalshi outcome (Kalshi's discretion,
+        Rulebook 6.3(b)). The one realistic way this pair resolves
+        differently.
+      - Measure: Kalshi "target range" vs Polymarket "upper bound".
+      - No decision: No on both, possibly weeks apart.
+      - Trading end: Kalshi stops at 1:55 PM ET on Dec 9; Polymarket
+        trades through the 2:00 PM ET statement.
+      - Settlement: Kalshi exchange settlement vs Polymarket UMA oracle.
