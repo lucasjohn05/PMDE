@@ -20,7 +20,9 @@ continuously.
 client for every market in them, tracks each pair's divergence (see
 Divergence below), stores every Tick with 1s/1m/1h rollups (see
 Storage below), and records when it was running, with the commit and
-config it ran with, in `runs.jsonl` (see Run log). `cmd/kalshi` and `cmd/polymarket` run a single
+config it ran with, in `runs.jsonl` (see Run log). `cmd/pmde-analyze`
+reports on the stored data per pair: coverage, mid divergence, the
+executable gap before and after fees, and lead/lag (see Analysis). `cmd/kalshi` and `cmd/polymarket` run a single
 venue's client against one hardcoded market, for debugging.
 
 Both venue clients connect over WebSocket (Kalshi's with a signed
@@ -555,6 +557,111 @@ Reaching step 4 takes a disk stalled for long enough to fill 1024 Ticks
 *and* a full reader queue behind them. At that point, resyncing is
 better than recording a history with silent gaps.
 
+## Analysis
+
+`cmd/pmde-analyze` reads a data directory (copied off the droplet, or
+the local one) and writes one report per pair, as text or `-json`:
+
+```
+pmde-analyze -data-dir data -pair fed-dec-2026-hold -from 2026-10-22 -to 2026-10-28
+```
+
+`-from`/`-to` take a UTC date or RFC 3339 (`-to` with a date means the
+end of that day); by default the report covers all the data there is.
+To pull the droplet's data, see the "Copy the data out" row under
+Running it.
+
+**What it computes.** It merges both venues' tick files by `t` and
+walks the timeline once. Each instant gets a single classification:
+
+1. **After Kalshi's last trade.** The pair's `kalshi_last_trade` (1:55
+   PM ET on decision day, from the contract terms) is the cutoff. After
+   it, Kalshi's book is frozen while Polymarket's still trades.
+2. **pmde not running.** This comes from `runs.jsonl`: a run counts as
+   up from its start line to its stop line, or to its last heartbeat
+   after a crash. Runs whose config didn't include the pair don't
+   count. A new run starts with both books untrusted, because the stored
+   ticks don't record a clean shutdown's final untrusted tick, and a
+   crash records nothing at all.
+3. **A book untrusted.** The last tick for that book had `ok:false`.
+4. **Covered.** Everything else. Every statistic below is computed over
+   covered time only.
+
+The report sections:
+
+- **Coverage.** How [from, to) splits into those classes.
+- **Mid divergence.** Kalshi mid minus Polymarket mid, weighted by how
+  long each value held rather than by tick count: mean, median, p5, p95
+  and max |x|.
+- **Executable gap, before and after fees.** Both legs are taker orders,
+  at the smaller of the two crossing top-of-book sizes.
+  - **Time:** time crossed before fees, after fees, and after fees at
+    the stress rate.
+  - **Episodes:** each crossing episode (a continuous stretch of crossed
+    books, ended by uncrossing or by losing coverage) is shown at its
+    largest gap: size, prices, the effective Kalshi fee per contract at
+    that size, net per contract and net $ for the whole size.
+  - **Fees:** the formulas, rates and source links are printed with
+    every report.
+- **Lead/lag.** The section opens with two caveats. First, `t` is local
+  receive time, so results reflect arrival order at this host, not true
+  venue-side ordering. Second, each venue's median `t - vt` and their
+  difference: a lead shorter than that difference can't be told apart
+  from one venue's messages taking longer to arrive. The difference is
+  repeated next to every lead/lag number. Then:
+  - **Follow delays.** Mid moves of at least `-move-bps` (default 50,
+    half a 1-cent tick) are matched in time order, one to one. A move
+    follows the earliest unmatched same-direction move on the other
+    venue within `-follow-window` (default 60s). A move that follows
+    nothing is a leader. Per direction, the report gives leaders, the
+    share followed (excluding censored ones), and the median and p90
+    delay.
+  - **Cross-correlation.** 1-second mid changes, Kalshi at s against
+    Polymarket at s+lag, for lags of up to `-corr-max-lag` (default
+    30s), with the peak. The peak is flagged as likely noise when a
+    venue changed in fewer than 30 seconds.
+- **Not modelled.** Resolution-rule differences (the 12.5 bp case),
+  that the Polymarket venue is closed to US persons, capital and
+  settlement, depth beyond the top of book, and latency.
+
+**Fees** (`fees.yaml`: rates in ppm, each with source links and the
+date it was checked; the formulas are in `internal/analysis/fees.go`):
+
+| Venue | Taker fee | Rate used |
+|---|---|---|
+| Kalshi | `roundup(0.07 x C x P x (1-P))` to the next cent, per order ([fee schedule](https://kalshi.com/docs/kalshi-fee-schedule.pdf), [series fee_type](https://docs.kalshi.com/api-reference/market/get-series.md), [rounding](https://docs.kalshi.com/getting_started/fee_rounding.md)) | 0.07; `KXFEDDECISION`'s `fee_multiplier` is 1 |
+| Polymarket (international) | `C x rate x p x (1-p)`, rounded to 5 decimals ([fees](https://docs.polymarket.com/trading/fees.md), [per-market feeSchedule](https://docs.polymarket.com/market-data/market-details.md)) | 0, the market's own `feeSchedule.rate` (and the CLOB's `fd.r`); a stress row at 0.05, the Economics category rate |
+
+- **The fees are taker fees.** Makers pay 0.25x the Kalshi rate and
+  nothing on Polymarket, but neither leg is a maker here.
+- **The Polymarket CLOB's `/fee-rate` endpoint isn't used.** It returns
+  `base_fee: 1000` for every fee-bearing market, whatever that market's
+  actual rate ([py-clob-client-v2 #107](https://github.com/Polymarket/py-clob-client-v2/issues/107)).
+- **Prices and money stay integers.** Rates are in ppm, money in
+  micro-dollars, and products that could overflow use `math/big`. Only
+  the correlation coefficients are floats.
+
+**Which Polymarket.** pmde records the international venue
+(`polymarket.com`; the CLOB on Polygon), which is closed to US persons.
+"Executable" therefore means executable by a non-US trader with accounts
+on both venues. Polymarket US is a separate exchange, with its own books
+and fees ([0.0695 x C x p x (1-p)](https://docs.polymarket.us/fees.md)
+since 2026-10-19), and pmde doesn't record it.
+
+**First run on the droplet's first 23 minutes** (2026-10-22, 98%
+covered):
+
+- **The December hold pair** was crossed by 2c (Kalshi bid 21c vs
+  Polymarket ask 19c) for 100% of covered time, but net of fees for only
+  46%. When the smaller top-of-book size is small, Kalshi's per-order
+  round-up to a cent eats the whole 2c. At the 1,514-contract snapshot
+  the effective Kalshi fee was 1.16c per contract.
+- **The December hike pair** was crossed 46% of the time by 1c (Kalshi
+  ask 76c vs Polymarket bid 77c), where Kalshi's fee (1.27c a contract)
+  exceeds the gap. It was never net-positive.
+- **Twenty minutes is far too little data for lead/lag.** The report
+  says so.
+
 ## Deploying
 
 The laptop sleeps, drifts and can't send a background process Ctrl+C, so
@@ -791,14 +898,24 @@ deploy/compose.yaml                the deployment: restart unless-stopped, data 
 cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks fanned out to the divergence tracker and the storage writer, index.json, /metrics
 cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics
 cmd/polymarket/main.go             debug: one polymarket.Client on a hardcoded asset, logs best bid/ask changes, /metrics
-pairs.yaml                         the hand-written venue pairs (October and December 2026 FOMC: hold, hike 25), with resolution-rule differences in notes
+cmd/pmde-analyze/main.go           per-pair report from a data directory: flags, loading, text or JSON
+fees.yaml                          fee rates (ppm) with source links and checked dates; Polymarket rate and stress rate
+internal/analysis/analysis.go      the timeline sweep: coverage classes, run resets, cutoff, mid stats, crossings and episodes
+internal/analysis/leadlag.go       follow matching, 1s cross-correlation, transport medians (t - vt)
+internal/analysis/fees.go          fees.yaml loading, KalshiFee (cent round-up) and PolymarketFee (5 decimals), integer/big math
+internal/analysis/load.go          reading tick files for a range (plus the day before) and runs.jsonl; default range
+internal/analysis/text.go          the text report
+internal/analysis/*_test.go        fee rounding and overflow; coverage, run resets, other pairs' runs, mid stats, episodes and fees, follows, threshold, correlation lag, transport, text caveats
+pairs.yaml                         the hand-written venue pairs (October and December 2026 FOMC: hold, hike 25), with resolution-rule differences in notes and Kalshi's last-trade time
 internal/tick/tick.go              Tick: venue, market, best bid/ask (bps) and sizes, trusted or not, receive and venue times; what clients emit
 internal/storage/storage.go        Writer: per-market JSONL segments, 1s/1m/1h rollups at write time, the 1s flush, Send (blocking, counts time blocked)
 internal/storage/segment.go        append-only segment files, torn-tail repair, record types, ReadTicks/ReadBars
 internal/storage/index.go          index.json: directory -> venue, market, pair names (merged, atomic)
+internal/storage/runs.go           runs.jsonl: start (commit, config hash, pairs), alive every minute, stop; ReadRuns
+internal/storage/runs_test.go      start/alive/stop lines, two runs, write after stop, torn tail, missing file
 internal/storage/storage_test.go   exact tick lines, bars over a hand-worked sequence, all-stale bars, clock steps back, day rollover, torn tail, unsafe names, blocking Send, Run, index
 internal/storage/replay_test.go    divergence recomputed from the stored files equals the live tracker's, step by step
-internal/divergence/config.go      pair config loading and validation (strict YAML)
+internal/divergence/config.go      pair config loading and validation (strict YAML); kalshi_last_trade must carry an explicit offset
 internal/divergence/config_test.go valid config, every rejection, and the committed pairs.yaml
 internal/divergence/divergence.go  Compute (mid divergence, executable gap), Tracker (latest Tick per market, recompute affected pairs), TickQueueSize
 internal/divergence/divergence_test.go Compute table incl. rounding and crossed books; Tracker: shared markets, stale skip, gauge removal, log-on-change; Run over a channel

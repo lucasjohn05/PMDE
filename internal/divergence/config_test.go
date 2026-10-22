@@ -3,6 +3,7 @@ package divergence
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 const assetA = "111061902544814266207267295505639408607400625795891618462682726460921782993748"
@@ -21,6 +22,7 @@ pairs:
     notes: |
       Rules differ on rounding.
       Second line.
+    kalshi_last_trade: 2026-10-28T13:55:00-04:00
   - name: hold-again-other-asset
     kalshi: KX-H0
     polymarket: "` + assetB + `"
@@ -29,9 +31,9 @@ pairs:
 		t.Fatal(err)
 	}
 	want := []Pair{
-		{"hold", "KX-H0", assetA, ""},
-		{"hike", "KX-H25", assetB, "Rules differ on rounding.\nSecond line.\n"},
-		{"hold-again-other-asset", "KX-H0", assetB, ""},
+		{Name: "hold", Kalshi: "KX-H0", Polymarket: assetA},
+		{Name: "hike", Kalshi: "KX-H25", Polymarket: assetB, Notes: "Rules differ on rounding.\nSecond line.\n", KalshiLastTrade: "2026-10-28T13:55:00-04:00"},
+		{Name: "hold-again-other-asset", Kalshi: "KX-H0", Polymarket: assetB},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d pairs, want %d: %+v", len(got), len(want), got)
@@ -40,6 +42,13 @@ pairs:
 		if got[i] != want[i] {
 			t.Errorf("pair %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+	if _, ok := got[0].LastTrade(); ok {
+		t.Error("pair without kalshi_last_trade has a LastTrade")
+	}
+	lt, ok := got[1].LastTrade()
+	if want := time.Date(2026, 10, 28, 17, 55, 0, 0, time.UTC); !ok || !lt.Equal(want) {
+		t.Errorf("LastTrade = %v, %v; want %v", lt, ok, want)
 	}
 }
 
@@ -61,6 +70,9 @@ func TestParsePairsErrors(t *testing.T) {
 		{"duplicate name", "pairs:\n" + pair("a", "K1", assetA) + pair("a", "K2", assetB), "duplicate name"},
 		{"duplicate markets", "pairs:\n" + pair("a", "K", assetA) + pair("b", "K", assetA), "same markets as pair \"a\""},
 		{"not yaml", "pairs: [", "parsing pair config"},
+		{"last trade: bare date", "pairs:\n" + pair("a", "K", assetA) + "    kalshi_last_trade: 2026-10-28\n", "explicit offset"},
+		{"last trade: UTC Z", "pairs:\n" + pair("a", "K", assetA) + "    kalshi_last_trade: 2026-10-28T17:55:00Z\n", "explicit offset"},
+		{"last trade: no seconds", "pairs:\n" + pair("a", "K", assetA) + "    kalshi_last_trade: 2026-10-28T13:55-04:00\n", "explicit offset"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

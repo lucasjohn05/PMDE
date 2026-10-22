@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -29,6 +30,25 @@ type Pair struct {
 	// the two venues' resolution rules differ. Optional; the code doesn't
 	// read it.
 	Notes string `yaml:"notes"`
+
+	// KalshiLastTrade is when trading on the Kalshi market ends, as RFC
+	// 3339 with an explicit offset ("2026-10-28T13:55:00-04:00").
+	// Optional. pmde-analyze excludes the pair from this time on: after
+	// it, Kalshi's book is frozen while Polymarket's still trades, so the
+	// divergence compares a closed market with an open one. A string, not
+	// a time.Time, so that a bare date (which YAML would read as midnight
+	// UTC) is an error instead; see LastTrade.
+	KalshiLastTrade string `yaml:"kalshi_last_trade"`
+}
+
+// LastTrade parses KalshiLastTrade. ok is false if it isn't set.
+// ParsePairs has already rejected values that don't parse.
+func (p Pair) LastTrade() (t time.Time, ok bool) {
+	if p.KalshiLastTrade == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, p.KalshiLastTrade)
+	return t, err == nil
 }
 
 type config struct {
@@ -86,6 +106,8 @@ func ParsePairs(data []byte) ([]Pair, error) {
 			// mistake is pasting the market's condition ID (0x...) or
 			// its slug instead.
 			return nil, fmt.Errorf("pair %q: polymarket %q is not an asset (token) ID; those are long decimal numbers, not the 0x... condition ID", p.Name, p.Polymarket)
+		case p.KalshiLastTrade != "" && !validLastTrade(p.KalshiLastTrade):
+			return nil, fmt.Errorf("pair %q: kalshi_last_trade %q must be RFC 3339 with an explicit offset, like 2026-10-28T13:55:00-04:00", p.Name, p.KalshiLastTrade)
 		case names[p.Name]:
 			return nil, fmt.Errorf("pair %q: duplicate name", p.Name)
 		}
@@ -97,6 +119,14 @@ func ParsePairs(data []byte) ([]Pair, error) {
 		markets[key] = p.Name
 	}
 	return c.Pairs, nil
+}
+
+// validLastTrade reports whether s is an RFC 3339 time with a numeric
+// offset. "Z" is refused too: the venues' rules are written in ET, and a
+// UTC time typed by hand is the likelier mistake.
+func validLastTrade(s string) bool {
+	_, err := time.Parse(time.RFC3339, s)
+	return err == nil && len(s) >= 6 && (s[len(s)-6] == '+' || s[len(s)-6] == '-')
 }
 
 func allDigits(s string) bool {

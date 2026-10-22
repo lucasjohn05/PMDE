@@ -1,0 +1,49 @@
+# Trading fees pmde-analyze applies to the executable gap. Rates are in
+# parts per million (70000 = 0.07) so the arithmetic stays in integers.
+# The formulas and rounding are fixed in internal/analysis/fees.go; this
+# file holds the rates and where they came from. pmde-analyze prints both
+# with every report.
+#
+# Both legs are assumed to be taker orders (crossing the spread now), at
+# the executable size: the smaller of the two crossing top-of-book sizes.
+
+kalshi:
+  venue: Kalshi (CFTC-regulated DCM)
+  # fee = roundup(rate x C x P x (1 - P)) to the next cent, per order,
+  # where C is contracts and P the price in dollars. Times the series'
+  # fee_multiplier, which is 1 for KXFEDDECISION (fee_type
+  # quadratic_with_maker_fees, no scheduled fee changes, checked
+  # 2026-10-22). Makers pay 0.25 x the taker rate; unused here.
+  taker_rate_ppm: 70000
+  checked: 2026-10-22
+  sources:
+    - https://kalshi.com/docs/kalshi-fee-schedule.pdf
+    - https://docs.kalshi.com/api-reference/market/get-series.md
+    - https://docs.kalshi.com/getting_started/fee_rounding.md
+  notes: |
+    The fee schedule rounds each order's fee up to the next cent. Kalshi's
+    API docs describe finer-grained balances and rounding rebates for some
+    account types; the per-order cent round-up is the conservative reading.
+
+polymarket:
+  venue: Polymarket international (polymarket.com, CLOB on Polygon); not open to US persons
+  # fee = C x rate x p x (1 - p), taker only, rounded to 5 decimals of
+  # USDC (minimum 0.00001 when the rate isn't 0). C is shares.
+  #
+  # The rate is the market's own: Gamma feeSchedule.rate and the CLOB's
+  # /clob-markets fd.r, both 0 for all four markets (checked 2026-10-22).
+  # The CLOB /fee-rate endpoint's base_fee (1000) is the same on every
+  # fee-bearing market and isn't a rate (py-clob-client-v2 issue #107).
+  taker_rate_ppm: 0
+  # The documented Economics category rate, reported alongside, so no
+  # conclusion depends on the per-market rate staying 0.
+  stress_taker_rate_ppm: 50000
+  checked: 2026-10-22
+  sources:
+    - https://docs.polymarket.com/trading/fees.md
+    - https://docs.polymarket.com/market-data/market-details.md
+    - https://github.com/Polymarket/py-clob-client-v2/issues/107
+  notes: |
+    These are the international venue's fees. Polymarket US is a separate
+    exchange with its own books and fees (https://docs.polymarket.us/fees.md:
+    0.0695 x C x p x (1 - p) since 2026-10-19), and pmde doesn't record it.
