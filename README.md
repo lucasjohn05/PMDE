@@ -579,81 +579,105 @@ an edit and a restart, not a rebuild.
   container and all eight books resynced. (`docker kill` doesn't test
   this: Docker counts it as a manual stop and doesn't restart.)
 
+**Deployed on a DigitalOcean droplet** (Ubuntu 24.04, 1 vCPU, 1 GB) on
+2026-10-22, following the steps below exactly:
+- all eight books synced, no drops or reconnects, and
+  `storage_blocked_seconds_total` 0;
+- metrics listen on `127.0.0.1:9100` only, and the port doesn't answer
+  from outside;
+- `runs.jsonl` got a start line with the deployed commit and the
+  config hash `sha256sum pairs.yaml` gives, then an `alive` a minute;
+- on a reboot, Docker stopped pmde cleanly (a `stop` line) and started
+  it again at boot, 26s later, with every book resynced;
+- mean ingest lag ~15ms on Kalshi and ~45ms on Polymarket, with the
+  clock NTP-synced; the container uses about 7 MB of memory.
+
 ### On a fresh droplet
 
-Ubuntu 24.04 on the smallest droplet is plenty: 8 connections, a few MB of
-data a day.
+Ubuntu 24.04 on the smallest droplet (1 vCPU, 1 GB) is plenty: 8
+connections, a few MB of data a day. The steps run as `root`,
+DigitalOcean's default login, so nothing needs `sudo`. (With a sudo user
+instead, prefix the commands with `sudo`, and put `GIT_COMMIT=...` after
+it: `sudo` doesn't pass your environment through.)
 
-1. **Install Docker Engine and the compose plugin**, following
-   https://docs.docker.com/engine/install/ubuntu/. Its packages enable
-   the Docker service at boot, which `restart: unless-stopped` relies on
-   after a reboot.
+1. **Update and reboot if needed:**
+   ```
+   apt update && apt full-upgrade -y
+   test -f /var/run/reboot-required && reboot
+   ```
+   Plain `apt upgrade` holds back kernel updates that pull in new
+   packages; `full-upgrade` takes them. A few packages may stay listed as
+   upgradable: those are Ubuntu's phased updates, which apt installs when
+   their rollout reaches the host.
 
-2. **Check the clock is synchronized.** Every tick's `t` is this host's
+2. **Install Docker Engine and the compose plugin**, from Docker's apt
+   repository, following https://docs.docker.com/engine/install/ubuntu/.
+   Its packages enable the Docker service at boot, which
+   `restart: unless-stopped` relies on after a reboot.
+
+3. **Check the clock is synchronized.** Every tick's `t` is this host's
    clock, and lag is measured against it (see Storage):
    ```
    timedatectl          # want "System clock synchronized: yes" and "NTP service: active"
    ```
    Ubuntu's default `systemd-timesyncd` does this. If it says no, run
-   `sudo timedatectl set-ntp true`.
+   `timedatectl set-ntp true`.
 
-3. **Firewall: SSH only.**
+4. **Firewall: SSH only.** Allow SSH *before* enabling, or the next login
+   is locked out:
    ```
-   sudo ufw allow OpenSSH && sudo ufw enable
+   ufw allow OpenSSH && ufw --force enable
    ```
    Docker-published ports bypass ufw. That's why compose binds metrics
    to `127.0.0.1:9100` rather than relying on the firewall.
 
-4. **Get the code**, as your own user rather than root, so `git`
-   commands in it (step 7) don't need `sudo`:
+5. **Get the code:**
    ```
-   sudo install -d -o "$USER" -g "$USER" /opt/pmde
    git clone https://github.com/lucasjohn05/PMDE.git /opt/pmde
    cd /opt/pmde
    ```
 
-5. **Install the Kalshi key** where compose expects it, readable only by
+6. **Install the Kalshi key** where compose expects it, readable only by
    the container's user (uid 65532). Without swarm, a compose file
    secret is a bind mount that keeps the host file's owner and mode.
    ```
    # from your machine:
-   scp ~/.kalshi/private_key.pem <droplet>:/tmp/kalshi.pem
+   scp ~/.kalshi/private_key.pem root@<droplet>:/tmp/kalshi.pem
    # on the droplet:
-   sudo install -d -m 0755 /etc/pmde
-   sudo install -o 65532 -g 65532 -m 0400 /tmp/kalshi.pem /etc/pmde/kalshi.pem
+   install -d -m 0755 /etc/pmde
+   install -o 65532 -g 65532 -m 0400 /tmp/kalshi.pem /etc/pmde/kalshi.pem
    rm /tmp/kalshi.pem
    ```
-
-6. **Set the key ID** in `deploy/.env` (gitignored, and excluded from the
+   Then set the key ID in `deploy/.env` (gitignored, and excluded from the
    image build):
    ```
-   echo 'KALSHI_KEY_ID=<your key id>' > deploy/.env
-   chmod 600 deploy/.env
+   (umask 077; echo 'KALSHI_KEY_ID=<your key id>' > deploy/.env)
    ```
 
-7. **Build and start**, passing the commit to record in the run log
-   (after `sudo`, which doesn't pass your environment through):
+7. **Build and start**, passing the commit to record in the run log:
    ```
-   sudo GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build
+   GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build
    ```
+   The build takes a few minutes on 1 vCPU.
 
-8. **Check it:**
+8. **Check it**, after a minute so there's a heartbeat:
    ```
-   sudo docker compose -f deploy/compose.yaml logs -f        # "book synced", "divergence ..."
+   docker compose -f deploy/compose.yaml logs        # "run <id>: commit ...", "book synced" x8
    curl -s localhost:9100/metrics | grep -E '^(book_stale|divergence_mid_bps)'
-   sudo docker run --rm -v pmde_data:/data:ro busybox tail -n 3 /data/runs.jsonl   # start line with the commit
+   docker run --rm -v pmde_data:/data:ro busybox tail -n 3 /data/runs.jsonl   # start + alive
+   ss -ltn | grep 9100                               # 127.0.0.1:9100 only
    ```
    From your own machine, reach the metrics through an SSH tunnel:
-   `ssh -L 9100:localhost:9100 <droplet>`, then
+   `ssh -L 9100:localhost:9100 root@<droplet>`, then
    http://localhost:9100/metrics.
 
 ### Running it
 
-| Task | Command (from `/opt/pmde`; docker commands with `sudo`) |
+| Task | Command (as root, from `/opt/pmde`) |
 |---|---|
 | Logs | `docker compose -f deploy/compose.yaml logs -f` |
 | Change pairs | edit `pairs.yaml`, then `docker compose -f deploy/compose.yaml restart` |
-| Update the code | `git pull`, then `sudo GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build` |
+| Update the code | `git pull && GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build` |
 | Stop cleanly | `docker compose -f deploy/compose.yaml stop` (SIGTERM: writes partial windows, flushes, fsyncs) |
 | Find the data | `docker volume inspect pmde_data` (`Mountpoint`, usually `/var/lib/docker/volumes/pmde_data/_data`) |
 | Copy the data out | `docker run --rm -v pmde_data:/data:ro -v "$PWD":/out busybox tar czf /out/pmde-data.tgz -C /data .` |
