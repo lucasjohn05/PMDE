@@ -18,8 +18,9 @@ continuously.
 
 `cmd/pmde` is the service. It reads venue pairs from `pairs.yaml`, runs a
 client for every market in them, tracks each pair's divergence (see
-Divergence below), and stores every Tick with 1s/1m/1h rollups (see
-Storage below). `cmd/kalshi` and `cmd/polymarket` run a single
+Divergence below), stores every Tick with 1s/1m/1h rollups (see
+Storage below), and records when it was running, with the commit and
+config it ran with, in `runs.jsonl` (see Run log). `cmd/kalshi` and `cmd/polymarket` run a single
 venue's client against one hardcoded market, for debugging.
 
 Both venue clients connect over WebSocket (Kalshi's with a signed
@@ -368,6 +369,7 @@ written.
 ```
 data/
   index.json                                   directory -> venue, market, pair names
+  runs.jsonl                                   when pmde was running, and which build and config
   kalshi/KXFEDDECISION-26OCT-H0/
     2026-10-21.ticks.jsonl                     every Tick
     2026-10-21.1s.jsonl                        1-second bars
@@ -481,6 +483,37 @@ how long it had no trusted book, and `ok` whether it ended trusted.
   `ReadBars`) also skip an unparseable *last* line, and treat a bad line
   anywhere else as corruption.
 
+### Run log
+
+The tick files are silent both when a market is quiet and when pmde
+isn't running, and a crash leaves no trace in them. `runs.jsonl` tells
+the two apart. Each process appends, tagged with a random run ID:
+
+```
+{"ev":"start","t":1792700000000,"run":"9f2c...","commit":"f20e3c5...","config":"/etc/pmde/pairs.yaml","config_sha256":"1b7e...","pairs":["fed-oct-2026-hold",...],"heartbeat_ms":60000}
+{"ev":"alive","t":1792700060000,"run":"9f2c..."}                once a minute
+{"ev":"stop","t":1792700093000,"run":"9f2c..."}                 clean shutdown only
+```
+
+- **A run is known to be up** from its start line to its stop line, or,
+  after a crash, to its last `alive` line. Up to a minute after that
+  last line is unknown, and gets counted as down. `t` is the same local
+  clock as the ticks'.
+- **The stop line is written last**, after the writer has flushed and
+  closed every file, so a stop line means the run's data is on disk.
+- **`commit`** is the git commit the binary was built from. A plain
+  `go build` in the repo stamps it (with `-dirty` for uncommitted
+  changes); the Docker build has no `.git`, so it's passed in as the
+  `GIT_COMMIT` build arg, and is `unknown` if nobody did. (`go run`
+  doesn't stamp it either.)
+- **`config_sha256`** is a hash of the pair config file's bytes, so data
+  can be tied to the exact pairs and notes it was recorded under. Editing
+  a comment changes it too.
+- **Each line is written and fsynced on its own.** It's one line a
+  minute, and a heartbeat sitting in a buffer through a crash would
+  prove nothing. A torn last line is cut off at the next start, as for
+  the segments.
+
 ### When the disk is slow
 
 The storage stage blocks rather than drops, per CLAUDE.md. A dropped Tick
@@ -571,9 +604,11 @@ data a day.
    Docker-published ports bypass ufw. That's why compose binds metrics
    to `127.0.0.1:9100` rather than relying on the firewall.
 
-4. **Get the code:**
+4. **Get the code**, as your own user rather than root, so `git`
+   commands in it (step 7) don't need `sudo`:
    ```
-   sudo git clone https://github.com/lucasjohn05/PMDE.git /opt/pmde
+   sudo install -d -o "$USER" -g "$USER" /opt/pmde
+   git clone https://github.com/lucasjohn05/PMDE.git /opt/pmde
    cd /opt/pmde
    ```
 
@@ -592,19 +627,21 @@ data a day.
 6. **Set the key ID** in `deploy/.env` (gitignored, and excluded from the
    image build):
    ```
-   echo 'KALSHI_KEY_ID=<your key id>' | sudo tee deploy/.env
-   sudo chmod 600 deploy/.env
+   echo 'KALSHI_KEY_ID=<your key id>' > deploy/.env
+   chmod 600 deploy/.env
    ```
 
-7. **Build and start:**
+7. **Build and start**, passing the commit to record in the run log
+   (after `sudo`, which doesn't pass your environment through):
    ```
-   sudo docker compose -f deploy/compose.yaml up -d --build
+   sudo GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build
    ```
 
 8. **Check it:**
    ```
    sudo docker compose -f deploy/compose.yaml logs -f        # "book synced", "divergence ..."
    curl -s localhost:9100/metrics | grep -E '^(book_stale|divergence_mid_bps)'
+   sudo docker run --rm -v pmde_data:/data:ro busybox tail -n 3 /data/runs.jsonl   # start line with the commit
    ```
    From your own machine, reach the metrics through an SSH tunnel:
    `ssh -L 9100:localhost:9100 <droplet>`, then
@@ -612,11 +649,11 @@ data a day.
 
 ### Running it
 
-| Task | Command (from `/opt/pmde`, with `sudo`) |
+| Task | Command (from `/opt/pmde`; docker commands with `sudo`) |
 |---|---|
 | Logs | `docker compose -f deploy/compose.yaml logs -f` |
 | Change pairs | edit `pairs.yaml`, then `docker compose -f deploy/compose.yaml restart` |
-| Update the code | `git pull && docker compose -f deploy/compose.yaml up -d --build` |
+| Update the code | `git pull`, then `sudo GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build` |
 | Stop cleanly | `docker compose -f deploy/compose.yaml stop` (SIGTERM: writes partial windows, flushes, fsyncs) |
 | Find the data | `docker volume inspect pmde_data` (`Mountpoint`, usually `/var/lib/docker/volumes/pmde_data/_data`) |
 | Copy the data out | `docker run --rm -v pmde_data:/data:ro -v "$PWD":/out busybox tar czf /out/pmde-data.tgz -C /data .` |

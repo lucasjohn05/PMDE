@@ -5,11 +5,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 
@@ -26,15 +29,25 @@ const (
 	polymarketURL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 )
 
+// commit is the git commit pmde was built from, set at build time with
+// -ldflags "-X main.commit=<hash>" (the Dockerfile does this, since .git
+// isn't in its build context). Left empty, it comes from the VCS stamp
+// that go build records when run inside the repo.
+var commit string
+
 func main() {
 	configPath := flag.String("config", "pairs.yaml", "venue pair config (YAML)")
 	metricsAddr := flag.String("metrics-addr", ":9100", "address to serve Prometheus /metrics on")
 	dataDir := flag.String("data-dir", "data", "directory to store ticks and rollups in")
 	flag.Parse()
 
-	pairs, err := divergence.LoadPairs(*configPath)
+	config, err := os.ReadFile(*configPath)
 	if err != nil {
-		log.Fatalf("%v", err)
+		log.Fatalf("reading pair config: %v", err)
+	}
+	pairs, err := divergence.ParsePairs(config)
+	if err != nil {
+		log.Fatalf("%s: %v", *configPath, err)
 	}
 
 	keyPath, keyID := os.Getenv("KALSHI_KEY_PATH"), os.Getenv("KALSHI_KEY_ID")
@@ -64,6 +77,21 @@ func main() {
 	if err := storage.UpdateIndex(*dataDir, indexEntries(pairs)); err != nil {
 		log.Fatalf("%v", err)
 	}
+	sum := sha256.Sum256(config)
+	start := storage.RunRecord{
+		Commit:       buildCommit(),
+		Config:       *configPath,
+		ConfigSHA256: hex.EncodeToString(sum[:]),
+	}
+	for _, p := range pairs {
+		start.Pairs = append(start.Pairs, p.Name)
+	}
+	runs, err := storage.OpenRunLog(*dataDir, start, log.Printf)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	log.Printf("run %s: commit %s, config sha256 %s", runs.ID(), start.Commit, start.ConfigSHA256[:12])
+	go runs.Heartbeat(ctx)
 
 	// The fan-out: every client's book goroutine sends each Tick to the
 	// divergence tracker and to the storage writer. Both sends block when
@@ -120,6 +148,36 @@ func main() {
 	divergence.NewTracker(pairs, m, log.Printf).Run(ctx, ticks)
 	wg.Wait()
 	<-storeDone // the writer flushes and closes its files on the way out
+	runs.Stop() // last, so a stop line means the run's data is on disk
+}
+
+// buildCommit is the commit to record in the run log: commit if set at
+// build time, else go build's VCS stamp ("-dirty" if the tree had
+// uncommitted changes), else "unknown".
+func buildCommit() string {
+	if commit != "" {
+		return commit
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	var rev, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value
+		}
+	}
+	if rev == "" {
+		return "unknown"
+	}
+	if modified == "true" {
+		rev += "-dirty"
+	}
+	return rev
 }
 
 // indexEntries maps each market directory to the pairs it's part of.

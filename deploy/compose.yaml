@@ -1,6 +1,6 @@
 # pmde on an always-on Linux host. See "Deploying" in the README.
 #
-#   docker compose -f deploy/compose.yaml up -d --build
+#   GIT_COMMIT=$(git rev-parse HEAD) docker compose -f deploy/compose.yaml up -d --build
 #
 # Needs, next to this file, a .env (gitignored) with:
 #   KALSHI_KEY_ID=<your key id>
@@ -10,7 +10,11 @@ name: pmde
 
 services:
   pmde:
-    build: ..
+    build:
+      context: ..
+      args:
+        # Recorded on each run's start line in data/runs.jsonl.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: pmde:latest
     # Back after a crash or a reboot (with the Docker service enabled at
     # boot); stays down only after an explicit `docker compose stop`.

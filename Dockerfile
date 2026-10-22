@@ -4,7 +4,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pmde ./cmd/pmde
+# The commit to record in data/runs.jsonl. .git isn't in the build
+# context, so go build can't stamp it itself: pass it in, e.g.
+#   GIT_COMMIT=$(git rev-parse HEAD) docker compose ... up -d --build
+ARG GIT_COMMIT=unknown
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.commit=${GIT_COMMIT}" -o /out/pmde ./cmd/pmde
 # An empty data directory owned by the runtime user: a named volume
 # mounted at /data starts out with this ownership, so pmde can write it.
 RUN mkdir -p /out/data
