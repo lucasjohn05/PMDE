@@ -31,6 +31,12 @@
     },
     {
       "type": "panel",
+      "id": "text",
+      "name": "Text",
+      "version": ""
+    },
+    {
+      "type": "panel",
       "id": "timeseries",
       "name": "Time series",
       "version": ""
@@ -60,6 +66,247 @@
   "panels": [
     {
       "id": 1,
+      "type": "text",
+      "title": "",
+      "transparent": true,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "PMDE records Kalshi and Polymarket order books in real time and measures how far their prices diverge on matched FOMC pairs. [GitHub](https://github.com/lucasjohn05/PMDE) · [October 2026 FOMC findings](https://github.com/lucasjohn05/PMDE/blob/main/docs/fomc-oct-2026.md)"
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Mid divergence, Kalshi − Polymarket",
+      "description": "Kalshi mid minus Polymarket mid: positive means Kalshi prices the outcome higher, negative means Polymarket does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 2
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "divergence_mid_bps{job=\"pmde\"}",
+          "legendFormat": "{{pair}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Executable gap",
+      "description": "Best cross-venue trade before fees: positive means one venue's bid is above the other's ask (the books cross); -100 means the best quotes are 1¢ apart.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 2
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "divergence_gap_bps{job=\"pmde\"}",
+          "legendFormat": "{{pair}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Messages per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (venue, market, outcome) (rate(messages_total{job=\"pmde\", outcome!=\"\"}[5m]))",
+          "legendFormat": "{{venue}} {{outcome}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Ingest lag",
+      "description": "Receive time minus the venue's timestamp; includes clock skew.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\", outcome!=\"\"}[5m])))",
+          "legendFormat": "p50 {{venue}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\", outcome!=\"\"}[5m])))",
+          "legendFormat": "p99 {{venue}}",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 6,
       "type": "stat",
       "title": "pmde up",
       "description": "Alloy's scrape of pmde's /metrics. No value means Alloy or the droplet isn't reporting.",
@@ -71,7 +318,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 18
       },
       "targets": [
         {
@@ -132,7 +379,7 @@
       }
     },
     {
-      "id": 2,
+      "id": 7,
       "type": "stat",
       "title": "Books stale",
       "description": "Markets whose book is untrusted right now (syncing, stale or reconnecting).",
@@ -144,7 +391,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 18
       },
       "targets": [
         {
@@ -193,7 +440,7 @@
       }
     },
     {
-      "id": 3,
+      "id": 8,
       "type": "stat",
       "title": "Markets resolved",
       "description": "Markets the client stopped on because the venue said they resolved.",
@@ -205,7 +452,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 18
       },
       "targets": [
         {
@@ -250,7 +497,7 @@
       }
     },
     {
-      "id": 4,
+      "id": 9,
       "type": "stat",
       "title": "Disk free (/)",
       "description": "",
@@ -262,7 +509,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 18
       },
       "targets": [
         {
@@ -315,10 +562,10 @@
       }
     },
     {
-      "id": 5,
+      "id": 10,
       "type": "timeseries",
       "title": "Book stale, per market",
-      "description": "Only series with pair/outcome labels (since 2026-11-10 17:06 UTC); older unlabelled series are filtered out. 1 while the book is untrusted. Brief spikes are reconnects; a long 1 is what the stale alert fires on.",
+      "description": "1 while the book is untrusted. Brief spikes are reconnects; a long 1 is what the stale alert fires on. Only series with pair/outcome labels (since 2026-11-10 17:06 UTC).",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -327,7 +574,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 22
       },
       "targets": [
         {
@@ -352,7 +599,8 @@
             "showPoints": "never",
             "spanNulls": false
           },
-          "min": 0
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
@@ -369,7 +617,7 @@
       }
     },
     {
-      "id": 6,
+      "id": 11,
       "type": "timeseries",
       "title": "Market resolved, per market",
       "description": "",
@@ -381,7 +629,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 22
       },
       "targets": [
         {
@@ -406,7 +654,8 @@
             "showPoints": "never",
             "spanNulls": false
           },
-          "min": 0
+          "min": 0,
+          "max": 1
         },
         "overrides": []
       },
@@ -423,232 +672,7 @@
       }
     },
     {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Mid divergence, Kalshi − Polymarket",
-      "description": "bps. Absent while either book has no trusted two-sided quote.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 12
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "divergence_mid_bps{job=\"pmde\"}",
-          "legendFormat": "{{pair}}",
-          "refId": "A",
-          "range": true,
-          "instant": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      }
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Executable gap",
-      "description": "bps, before fees. Positive means the books cross.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 12
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "divergence_gap_bps{job=\"pmde\"}",
-          "legendFormat": "{{pair}}",
-          "refId": "A",
-          "range": true,
-          "instant": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      }
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "Messages per second",
-      "description": "",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 20
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by (venue, market, outcome) (rate(messages_total{job=\"pmde\", outcome!=\"\"}[5m]))",
-          "legendFormat": "{{venue}} {{outcome}}",
-          "refId": "A",
-          "range": true,
-          "instant": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      }
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Ingest lag",
-      "description": "Receive time minus the venue's timestamp; includes clock skew.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 20
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.5, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\", outcome!=\"\"}[5m])))",
-          "legendFormat": "p50 {{venue}}",
-          "refId": "A",
-          "range": true,
-          "instant": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.99, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\", outcome!=\"\"}[5m])))",
-          "legendFormat": "p99 {{venue}}",
-          "refId": "B",
-          "range": true,
-          "instant": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      }
-    },
-    {
-      "id": 11,
+      "id": 12,
       "type": "timeseries",
       "title": "Reconnects per hour",
       "description": "Alert above 10/h. Normal is well under 1/h.",
@@ -660,7 +684,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 30
       },
       "targets": [
         {
@@ -702,7 +726,7 @@
       }
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "timeseries",
       "title": "Resyncs per hour, by reason",
       "description": "",
@@ -714,7 +738,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 30
       },
       "targets": [
         {
@@ -756,7 +780,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "timeseries",
       "title": "Dropped messages per minute",
       "description": "The reader's queue was full. Alert above 1/min for 10m. None seen since deploy.",
@@ -768,7 +792,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 38
       },
       "targets": [
         {
@@ -810,10 +834,10 @@
       }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "timeseries",
       "title": "Storage blocked (fraction of time)",
-      "description": "Book goroutines waiting on the storage writer. Alert above 1% for 5m.",
+      "description": "Book goroutines waiting on the storage writer, as a fraction of time (0.0–1.0). Alert above 1% for 5m.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -822,7 +846,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 38
       },
       "targets": [
         {
@@ -846,8 +870,7 @@
             "fillOpacity": 0,
             "showPoints": "never",
             "spanNulls": false
-          },
-          "min": 0
+          }
         },
         "overrides": []
       },
