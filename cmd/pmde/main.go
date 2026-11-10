@@ -134,7 +134,14 @@ func main() {
 				OnTick:  send,
 				Logf:    prefixed(short(p.Polymarket)),
 				Metrics: m.Market(tick.Polymarket, p.Polymarket),
+				// Stops the client once a market that sends no book has
+				// resolved, instead of resubscribing to it forever.
+				Resolved: func(ctx context.Context, assetID string) (bool, error) {
+					return polymarket.Resolved(ctx, nil, polymarket.GammaBase, assetID)
+				},
 			}
+			// Run returns early only when the market has resolved; the
+			// pair's other venue keeps running.
 			wg.Go(func() { c.Run(ctx) })
 		}
 	}

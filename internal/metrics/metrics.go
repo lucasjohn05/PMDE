@@ -38,6 +38,7 @@ type Metrics struct {
 	reconnect *prometheus.CounterVec
 	resyncs   *prometheus.CounterVec
 	stale     *prometheus.GaugeVec
+	resolved  *prometheus.GaugeVec
 	lag       *prometheus.HistogramVec
 
 	divMid *prometheus.GaugeVec
@@ -69,6 +70,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "book_stale",
 			Help: "1 while the venue's book is untrusted (not yet synced, stale, or reconnecting), else 0.",
 		}, []string{"venue", "market"}),
+		resolved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "market_resolved",
+			Help: "1 once the venue has said the market resolved and the client stopped reconnecting to it (book_stale is then 0: there is no book to keep), else 0.",
+		}, []string{"venue", "market"}),
 		lag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "ingest_lag_seconds",
 			Help: "Receive time minus the venue's message timestamp. Includes clock skew between the venue and this host.",
@@ -88,7 +93,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		Name: "storage_blocked_seconds_total",
 		Help: "Time book goroutines spent blocked sending Ticks to the storage writer because its queue was full. Rising means the disk is slow and the books are being held up.",
 	})
-	reg.MustRegister(m.messages, m.dropped, m.reconnect, m.resyncs, m.stale, m.lag, m.divMid, m.divGap, m.storageBlocked)
+	reg.MustRegister(m.messages, m.dropped, m.reconnect, m.resyncs, m.stale, m.resolved, m.lag, m.divMid, m.divGap, m.storageBlocked)
 	return m
 }
 
@@ -103,8 +108,10 @@ func (m *Metrics) Market(venue, market string) *Market {
 		reconnect: m.reconnect.WithLabelValues(venue, market),
 		resyncs:   make(map[string]prometheus.Counter, len(resyncReasons)),
 		stale:     m.stale.WithLabelValues(venue, market),
+		resolved:  m.resolved.WithLabelValues(venue, market),
 		lag:       m.lag.WithLabelValues(venue, market),
 	}
+	v.resolved.Set(0)
 	for _, r := range resyncReasons {
 		v.resyncs[r] = m.resyncs.WithLabelValues(venue, market, r)
 	}
@@ -121,6 +128,7 @@ type Market struct {
 	reconnect prometheus.Counter
 	resyncs   map[string]prometheus.Counter // read-only after Market()
 	stale     prometheus.Gauge
+	resolved  prometheus.Gauge
 	lag       prometheus.Observer
 }
 
@@ -157,6 +165,17 @@ func (v *Market) Resync(reason string) {
 		c = v.resyncs[ResyncInvalid]
 	}
 	c.Inc()
+}
+
+// SetResolved records that the market has resolved and the client has
+// stopped: market_resolved goes to 1 and book_stale to 0, since a
+// resolved market has no book left to be stale.
+func (v *Market) SetResolved() {
+	if v == nil {
+		return
+	}
+	v.resolved.Set(1)
+	v.stale.Set(0)
 }
 
 // SetStale sets book_stale.

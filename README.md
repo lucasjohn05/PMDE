@@ -108,6 +108,24 @@ connection failed or was lost), or `snapshot_timeout`.
 **Two more ways a session ends.**
 - **Snapshot timeout.** No snapshot within 10s of subscribing, for
   example a rejected subscription or, as it turns out, a closed market.
+- **Market resolved (Polymarket).** The client stops for good instead
+  of reconnecting, in either of two cases:
+  - The venue closes the connection with a normal (1000) close whose
+    reason says resolved. On Oct 28 2026 that was "all subscribed
+    assets resolved", about two hours after the statement.
+  - A session ends in a snapshot timeout and Gamma's `/markets`
+    reports the asset's market `closed` with `umaResolutionStatus`
+    `resolved`. This catches a restart with a resolved asset in the
+    config: after its one-time close, Polymarket accepts the
+    subscription and never sends a book.
+
+  A snapshot timeout alone never counts as resolved, and neither does a
+  failed Gamma check: both keep retrying. Before this, the two October
+  assets reconnected about 33,500 times each over 13 days. Stopping
+  counts no reconnect and no resync, and sets `market_resolved` to 1 and
+  `book_stale` to 0. Kalshi doesn't need this: after its close it keeps
+  serving an empty snapshot on a live connection, so there's no retry
+  loop.
 - **Read timeout.** A minute with nothing at all from the venue. Kalshi
   sends protocol pings and Polymarket answers our `PING`s, so silence that
   long means the connection is dead even if TCP hasn't noticed. Kalshi's
@@ -212,7 +230,8 @@ gauges are labeled `pair`. `storage_blocked_seconds_total` has no labels
 | `dropped_messages_total` | counter | Messages the reader dropped because the queue was full. |
 | `reconnects_total` | counter | Every dial after the first, failed ones included. |
 | `resyncs_total{reason}` | counter | Times a trusted book was lost and had to be rebuilt from a fresh snapshot. `reason` is `seq_gap`, `dropped`, `reconnect` or `invalid_update`. |
-| `book_stale` | gauge | 1 while there's no trusted book: before the first snapshot, after it goes stale, and while reconnecting. |
+| `book_stale` | gauge | 1 while there's no trusted book: before the first snapshot, after it goes stale, and while reconnecting. 0 once the market has resolved. |
+| `market_resolved` | gauge | 1 once the venue has said the market resolved and the client stopped reconnecting to it (Polymarket only; see Reconnect and resync), else 0. |
 | `ingest_lag_seconds` | histogram | Receive time minus the venue's timestamp on the message. Buckets from 1ms to ~16s, doubling. |
 | `divergence_mid_bps{pair}` | gauge | Kalshi mid minus Polymarket mid. Absent while either book is untrusted. |
 | `divergence_gap_bps{pair}` | gauge | Executable gap (see Divergence). Absent while either book is untrusted. |
@@ -945,7 +964,8 @@ internal/metrics/metrics.go        the Prometheus metrics, a per-market recorder
 internal/metrics/metrics_test.go   series exist up front, values recorded, pair gauges set/cleared, nil recorders, server and busy-port startup error
 internal/polymarket/book.go        Polymarket order book state: snapshot/absolute price_change application, negRisk asset filtering
 internal/polymarket/book_test.go   table-driven tests plus a replay of testdata/polymarket_capture.jsonl
-internal/polymarket/client.go      as kalshi's, plus the app-level PING heartbeat
+internal/polymarket/client.go      as kalshi's, plus the app-level PING heartbeat; stops on a resolved market
+internal/polymarket/gamma.go       Resolved: whether an asset's market has closed and resolved, from the Gamma API
 internal/polymarket/client_test.go against a local websocket server: mid-stream hang-up then full replay; forced drop through the real goroutines; the slow-storage chain end to end; backoff; metric values
 internal/polymarket/feed.go        event dispatch (object or array framing), staleness until first book event, top-of-book change detection, Next (as kalshi)
 internal/polymarket/feed_test.go   fixture replay, array framing, synthetic top-of-book moves

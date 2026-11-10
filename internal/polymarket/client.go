@@ -3,9 +3,11 @@ package polymarket
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,7 +22,14 @@ import (
 const (
 	ReasonReconnect       = "reconnect"        // the connection failed or was lost
 	ReasonSnapshotTimeout = "snapshot_timeout" // subscribed, but no book event arrived
+
+	// ReasonResolved ends a session the venue closed because the market
+	// resolved. Run stops there instead of reconnecting.
+	ReasonResolved = "resolved"
 )
+
+// resolvedCheckTimeout bounds one Client.Resolved call.
+const resolvedCheckTimeout = 10 * time.Second
 
 const (
 	// Reconnect backoff: exponential from backoffBase, capped at
@@ -74,6 +83,15 @@ type Client struct {
 	// Metrics records this market's metrics. Nil records nothing.
 	Metrics *metrics.Market
 
+	// Resolved, if set, is asked after a session that got no book event
+	// (snapshot_timeout) whether the asset's market has resolved; true
+	// stops Run. That's how a resolved asset is noticed after the venue's
+	// one-time "all subscribed assets resolved" close: from then on
+	// Polymarket accepts the subscription and never sends a book. An
+	// error is logged and the client keeps retrying. In production it's
+	// a call to Resolved (gamma.go).
+	Resolved func(ctx context.Context, assetID string) (bool, error)
+
 	// Test hooks; zero in production.
 	snapshotTimeout time.Duration  // overrides defaultSnapshotTimeout
 	onQueue         func(q *Queue) // called with each session's queue
@@ -91,8 +109,13 @@ type top struct {
 	ok           bool
 }
 
-// Run keeps the book live until ctx is cancelled. It never gives up:
-// failures are logged and retried with backoff.
+// Run keeps the book live until ctx is cancelled or the market resolves.
+// Other failures are logged and retried with backoff.
+//
+// A resolved market ends Run without a reconnect or a resync counted:
+// market_resolved goes to 1 and book_stale to 0 (see SetResolved). It's
+// resolved when the venue closes the connection saying so, or, after a
+// session with no book event, when c.Resolved confirms it.
 func (c *Client) Run(ctx context.Context) {
 	attempt := 0
 	for {
@@ -102,10 +125,21 @@ func (c *Client) Run(ctx context.Context) {
 		start := time.Now()
 		reason, hadBook, err := c.session(ctx)
 		c.report(top{}, time.Time{}, 0) // whatever ended the session, the book went with it
-		c.Metrics.SetStale(true)
 		if ctx.Err() != nil {
+			c.Metrics.SetStale(true)
 			return
 		}
+		if reason == ReasonResolved {
+			c.Metrics.SetResolved()
+			c.logf("polymarket: market resolved (%v); not reconnecting", err)
+			return
+		}
+		if reason == ReasonSnapshotTimeout && c.checkResolved(ctx) {
+			c.Metrics.SetResolved()
+			c.logf("polymarket: no book event within the snapshot timeout and the market has resolved (Gamma); not reconnecting")
+			return
+		}
+		c.Metrics.SetStale(true)
 		// A resync is the loss of a trusted book. A session that never
 		// synced (a failed dial, a snapshot timeout) lost nothing; it
 		// shows up in reconnects_total only.
@@ -132,10 +166,35 @@ func (c *Client) Run(ctx context.Context) {
 	}
 }
 
+// checkResolved asks c.Resolved whether the market has resolved. No
+// check, or a failed one, is false: the client keeps retrying.
+func (c *Client) checkResolved(ctx context.Context) bool {
+	if c.Resolved == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, resolvedCheckTimeout)
+	defer cancel()
+	resolved, err := c.Resolved(ctx, c.AssetID)
+	if err != nil {
+		c.logf("polymarket: checking whether the market resolved: %v", err)
+		return false
+	}
+	return resolved
+}
+
+// resolvedClose reports whether err is the venue closing the connection
+// because the market resolved: a normal (1000) close whose reason says so.
+// The reason seen live, on 2026-10-28 when the October FOMC markets
+// resolved, was "all subscribed assets resolved".
+func resolvedClose(err error) bool {
+	var ce *websocket.CloseError
+	return errors.As(err, &ce) && ce.Code == websocket.CloseNormalClosure && strings.Contains(ce.Text, "resolved")
+}
+
 // session runs one connection from dial to close and reports why it
 // ended: one of the Feed's Reason constants if the book went stale, or
-// ReasonReconnect / ReasonSnapshotTimeout. hadBook reports whether the
-// book was trusted at some point during the session.
+// ReasonReconnect / ReasonSnapshotTimeout / ReasonResolved. hadBook
+// reports whether the book was trusted at some point during the session.
 func (c *Client) session(ctx context.Context) (reason string, hadBook bool, err error) {
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, c.URL, nil)
 	if err != nil {
@@ -233,6 +292,11 @@ func (c *Client) session(ctx context.Context) (reason string, hadBook bool, err 
 		c.logf("polymarket: %d message(s) dropped this session", n)
 	}
 
+	// Before the stale reason: the book goroutine also marks the book
+	// stale when the connection closes, whatever closed it.
+	if resolvedClose(readErr) {
+		return ReasonResolved, synced.Load(), readErr
+	}
 	select {
 	case reason := <-staleReason:
 		return reason, true, nil
