@@ -288,6 +288,9 @@ pairs:
 Each pair is a Kalshi market ticker and the Polymarket asset (token) ID of
 the outcome that means the same as Kalshi's "yes", plus optional `notes`.
 Pairs are written by hand; nothing matches markets automatically.
+Pairs whose markets have resolved move to an archive file, which only
+`pmde-analyze -config` reads: `pairs-2026-10.yaml` holds the October
+2026 FOMC pairs.
 
 **Each pair's `notes` records how the two venues' resolution rules
 differ**, read from Kalshi's market rules and contract terms and from
@@ -910,8 +913,11 @@ internal/analysis/leadlag.go       follow matching, 1s cross-correlation, transp
 internal/analysis/fees.go          fees.yaml loading, KalshiFee (cent round-up) and PolymarketFee (5 decimals), integer/big math
 internal/analysis/load.go          reading tick files for a range (plus the day before) and runs.jsonl; default range
 internal/analysis/text.go          the text report
+internal/analysis/cutoff.go        ResolveCutoff: Kalshi close_time from the API, else the config's kalshi_last_trade
+internal/kalshi/market.go          CloseTime: a market's close_time from Kalshi's public REST API
 internal/analysis/*_test.go        fee rounding and overflow; coverage, run resets, other pairs' runs, mid stats, episodes and fees, follows, threshold, correlation lag, transport, text caveats
-pairs.yaml                         the hand-written venue pairs (October and December 2026 FOMC: hold, hike 25), with resolution-rule differences in notes and Kalshi's last-trade time
+pairs.yaml                         the hand-written venue pairs (December 2026 FOMC: hold, hike 25), with resolution-rule differences in notes and Kalshi's last-trade time
+pairs-2026-10.yaml                 archived October 2026 FOMC pairs (resolved Oct 28), for pmde-analyze -config
 internal/tick/tick.go              Tick: venue, market, best bid/ask (bps) and sizes, trusted or not, receive and venue times; what clients emit
 internal/storage/storage.go        Writer: per-market JSONL segments, 1s/1m/1h rollups at write time, the 1s flush, Send (blocking, counts time blocked)
 internal/storage/segment.go        append-only segment files, torn-tail repair, record types, ReadTicks/ReadBars
