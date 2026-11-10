@@ -298,8 +298,9 @@ Polymarket's market description. For the Fed decision pairs:
   has no rounding rule. That's the one realistic way a hike-25 pair could
   resolve differently: a 12.5 bps hike.
 - **No decision:** both resolve to no change, but on different timelines.
-- **Trading end:** Kalshi stops trading at 1:55 PM ET on decision day,
-  before the 2:00 PM ET statement, while Polymarket trades on until it
+- **Trading end:** Kalshi stops trading at its 1:59 PM ET close_time on
+  decision day (the contract terms say 1:55, but on Oct 28 2026 trades
+  ran until 13:58:58), a minute before the 2:00 PM ET statement, while Polymarket trades on until it
   resolves. Divergence after Kalshi's close compares a frozen book with a
   live one.
 - **Settlement:** by the exchange on Kalshi; through the UMA oracle on
@@ -574,9 +575,13 @@ Running it.
 **What it computes.** It merges both venues' tick files by `t` and
 walks the timeline once. Each instant gets a single classification:
 
-1. **After Kalshi's last trade.** The pair's `kalshi_last_trade` (1:55
-   PM ET on decision day, from the contract terms) is the cutoff. After
-   it, Kalshi's book is frozen while Polymarket's still trades.
+1. **After Kalshi's last trade.** The cutoff is the Kalshi market's
+   `close_time`, fetched from Kalshi's public REST API (`-kalshi-api`;
+   1:59 PM ET on decision day). If that call fails, or `-kalshi-api` is
+   empty, the pair's `kalshi_last_trade` from the config is used
+   instead. Either way, pmde-analyze logs which source it used, and the
+   report names it. After the cutoff, Kalshi's book is frozen while
+   Polymarket's still trades.
 2. **pmde not running.** This comes from `runs.jsonl`: a run counts as
    up from its start line to its stop line, or to its last heartbeat
    after a crash. Runs whose config didn't include the pair don't

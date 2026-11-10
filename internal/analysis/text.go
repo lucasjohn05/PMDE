@@ -21,7 +21,11 @@ func WriteText(w io.Writer, r Report, maxEpisodes int) error {
 	pf("Polymarket  %s  (%s)\n", r.Polymarket, r.Fees.Polymarket.Venue)
 	pf("Range       %s to %s (%s)\n", r.From.Format(time.RFC3339), r.To.Format(time.RFC3339), dur(r.Coverage.TotalMs))
 	if r.KalshiLastTrade != nil {
-		pf("Kalshi last trade %s; excluded from then on\n", r.KalshiLastTrade.Format(time.RFC3339))
+		src := map[string]string{
+			CutoffFromAPI:    "from the Kalshi API's close_time",
+			CutoffFromConfig: "from the pair config's kalshi_last_trade",
+		}[r.KalshiLastTradeSource]
+		pf("Kalshi last trade %s (%s); excluded from then on\n", r.KalshiLastTrade.Format(time.RFC3339), cmp.Or(src, r.KalshiLastTradeSource))
 	}
 	for _, warn := range r.Warnings {
 		pf("WARNING: %s\n", warn)

@@ -49,6 +49,12 @@ type Input struct {
 	From, To   time.Time // the report covers [From, To)
 	Fees       Fees
 	Opts       Options
+
+	// Cutoff is when Kalshi trading ends (see ResolveCutoff). From then
+	// on the pair is excluded: Kalshi's book is frozen while
+	// Polymarket's still trades. Source CutoffNone, or a zero Cutoff,
+	// means no cutoff.
+	Cutoff Cutoff
 }
 
 // Report is one pair's analysis. Durations are in ms, money in
@@ -60,13 +66,16 @@ type Report struct {
 	From            time.Time  `json:"from"`
 	To              time.Time  `json:"to"`
 	KalshiLastTrade *time.Time `json:"kalshi_last_trade,omitempty"`
-	Coverage        Coverage   `json:"coverage"`
-	Mid             MidStats   `json:"mid"`
-	Gap             GapStats   `json:"gap"`
-	LeadLag         LeadLag    `json:"lead_lag"`
-	Fees            Fees       `json:"fees"`
-	NotModelled     []string   `json:"not_modelled"`
-	Warnings        []string   `json:"warnings,omitempty"`
+	// KalshiLastTradeSource is where KalshiLastTrade came from:
+	// CutoffFromAPI or CutoffFromConfig.
+	KalshiLastTradeSource string   `json:"kalshi_last_trade_source,omitempty"`
+	Coverage              Coverage `json:"coverage"`
+	Mid                   MidStats `json:"mid"`
+	Gap                   GapStats `json:"gap"`
+	LeadLag               LeadLag  `json:"lead_lag"`
+	Fees                  Fees     `json:"fees"`
+	NotModelled           []string `json:"not_modelled"`
+	Warnings              []string `json:"warnings,omitempty"`
 }
 
 // Coverage splits [From, To) by why it was or wasn't analyzed. Each
@@ -238,10 +247,10 @@ func Analyze(in Input) Report {
 	if len(spans) == 0 {
 		r.Warnings = append(r.Warnings, "no run in runs.jsonl tracked this pair, so pmde can't be shown to have been running and nothing counts as covered (data from before the run log existed?)")
 	}
-	if lt, ok := in.Pair.LastTrade(); ok {
+	if lt := in.Cutoff.At; !lt.IsZero() && in.Cutoff.Source != CutoffNone {
 		points = append(points, point{t: lt.UnixMilli(), kind: pointCutoff})
-		ltUTC := lt
-		r.KalshiLastTrade = &ltUTC
+		r.KalshiLastTrade = &lt
+		r.KalshiLastTradeSource = in.Cutoff.Source
 	}
 	slices.SortStableFunc(points, func(a, b point) int {
 		return cmp.Or(cmp.Compare(a.t, b.t), cmp.Compare(a.kind, b.kind), cmp.Compare(a.venue, b.venue), cmp.Compare(a.seq, b.seq))

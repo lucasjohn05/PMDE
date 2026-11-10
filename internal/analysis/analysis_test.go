@@ -49,7 +49,7 @@ func TestCoverage(t *testing.T) {
 	k := []storage.TickRecord{ok(0, 2100, 2200, 10, 10)}
 	p := []storage.TickRecord{ok(1000, 1800, 1900, 10, 10), stale(5000), ok(6000, 1800, 1900, 10, 10)}
 	runs := runRecs("r1", 0, 10000) // up [0, 10000), then down
-	r := analyze(k, p, runs, 0, 12000, func(in *Input) { in.Pair = pair })
+	r := analyze(k, p, runs, 0, 12000, func(in *Input) { in.Pair, in.Cutoff = pair, ResolveCutoff(pair, nil) })
 
 	c := r.Coverage
 	want := Coverage{TotalMs: 12000, CoveredMs: 7000, AfterLastTradeMs: 3000, PolymarketUntrustedMs: 2000, Runs: 1}

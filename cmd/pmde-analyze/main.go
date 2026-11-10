@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/lucasjohn05/pmde/internal/analysis"
 	"github.com/lucasjohn05/pmde/internal/divergence"
+	"github.com/lucasjohn05/pmde/internal/kalshi"
 )
 
 func main() {
@@ -31,6 +33,7 @@ func main() {
 	episodes := flag.Int("episodes", 20, "crossing episodes to list per pair in text output (the longest)")
 	moveBps := flag.Int("move-bps", def.MoveBps, "smallest mid move counted for lead/lag, in bps")
 	window := flag.Duration("follow-window", def.FollowWindow, "how long after one venue's move the other's still counts as following")
+	kalshiAPI := flag.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base the market close_time is fetched from, as each pair's cutoff; empty uses only the config's kalshi_last_trade")
 	maxLag := flag.Duration("corr-max-lag", def.CorrMaxLag, "largest lag for the 1s cross-correlation, each direction")
 	flag.Parse()
 
@@ -89,8 +92,10 @@ func main() {
 				t = dt
 			}
 		}
+		cut := analysis.ResolveCutoff(p, closeTimeFunc(*kalshiAPI))
+		logCutoff(p, cut)
 		reports = append(reports, analysis.Analyze(analysis.Input{
-			Pair: p, Kalshi: k, Polymarket: poly, Runs: runs, From: f, To: t, Fees: fees,
+			Pair: p, Kalshi: k, Polymarket: poly, Runs: runs, From: f, To: t, Fees: fees, Cutoff: cut,
 			Opts: analysis.Options{MoveBps: *moveBps, FollowWindow: *window, CorrMaxLag: *maxLag},
 		}))
 	}
@@ -110,6 +115,36 @@ func main() {
 		if err := analysis.WriteText(os.Stdout, r, *episodes); err != nil {
 			log.Fatal(err)
 		}
+	}
+}
+
+// closeTimeFunc fetches a Kalshi market's close_time from base, or is
+// nil (config only) when base is empty.
+func closeTimeFunc(base string) func(string) (time.Time, error) {
+	if base == "" {
+		return nil
+	}
+	return func(ticker string) (time.Time, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return kalshi.CloseTime(ctx, nil, base, ticker)
+	}
+}
+
+// logCutoff says which source each pair's cutoff came from, on stderr
+// so that -json output stays clean.
+func logCutoff(p divergence.Pair, c analysis.Cutoff) {
+	switch {
+	case c.Source == analysis.CutoffFromAPI:
+		log.Printf("%s: cutoff %s from the Kalshi API (%s close_time)", p.Name, c.At.Format(time.RFC3339), p.Kalshi)
+	case c.APIErr != nil && c.Source == analysis.CutoffFromConfig:
+		log.Printf("%s: Kalshi API failed (%v); cutoff %s from the config's kalshi_last_trade", p.Name, c.APIErr, c.At.Format(time.RFC3339))
+	case c.Source == analysis.CutoffFromConfig:
+		log.Printf("%s: cutoff %s from the config's kalshi_last_trade (-kalshi-api is empty)", p.Name, c.At.Format(time.RFC3339))
+	case c.APIErr != nil:
+		log.Printf("%s: Kalshi API failed (%v) and the config has no kalshi_last_trade; no cutoff", p.Name, c.APIErr)
+	default:
+		log.Printf("%s: no cutoff (-kalshi-api is empty and the config has no kalshi_last_trade)", p.Name)
 	}
 }
 

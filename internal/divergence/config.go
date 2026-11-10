@@ -32,8 +32,10 @@ type Pair struct {
 	Notes string `yaml:"notes"`
 
 	// KalshiLastTrade is when trading on the Kalshi market ends, as RFC
-	// 3339 with an explicit offset ("2026-10-28T13:55:00-04:00").
-	// Optional. pmde-analyze excludes the pair from this time on: after
+	// 3339 with an explicit offset ("2026-10-28T13:59:00-04:00").
+	// Optional. pmde-analyze uses it as the cutoff when it can't get the
+	// market's close_time from Kalshi's API, and excludes the pair from
+	// the cutoff on: after
 	// it, Kalshi's book is frozen while Polymarket's still trades, so the
 	// divergence compares a closed market with an open one. A string, not
 	// a time.Time, so that a bare date (which YAML would read as midnight
@@ -107,7 +109,7 @@ func ParsePairs(data []byte) ([]Pair, error) {
 			// its slug instead.
 			return nil, fmt.Errorf("pair %q: polymarket %q is not an asset (token) ID; those are long decimal numbers, not the 0x... condition ID", p.Name, p.Polymarket)
 		case p.KalshiLastTrade != "" && !validLastTrade(p.KalshiLastTrade):
-			return nil, fmt.Errorf("pair %q: kalshi_last_trade %q must be RFC 3339 with an explicit offset, like 2026-10-28T13:55:00-04:00", p.Name, p.KalshiLastTrade)
+			return nil, fmt.Errorf("pair %q: kalshi_last_trade %q must be RFC 3339 with an explicit offset, like 2026-10-28T13:59:00-04:00", p.Name, p.KalshiLastTrade)
 		case names[p.Name]:
 			return nil, fmt.Errorf("pair %q: duplicate name", p.Name)
 		}
