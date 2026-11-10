@@ -152,7 +152,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(book_stale{job=\"pmde\"})",
+          "expr": "sum(book_stale{job=\"pmde\", outcome!=\"\"})",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -213,7 +213,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(market_resolved{job=\"pmde\"})",
+          "expr": "sum(market_resolved{job=\"pmde\", outcome!=\"\"})",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -318,7 +318,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Book stale, per market",
-      "description": "1 while the book is untrusted. Brief spikes are reconnects; a long 1 is what the stale alert fires on.",
+      "description": "Only series with pair/outcome labels (since 2026-11-10 17:06 UTC); older unlabelled series are filtered out. 1 while the book is untrusted. Brief spikes are reconnects; a long 1 is what the stale alert fires on.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -335,7 +335,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "book_stale{job=\"pmde\"}",
+          "expr": "book_stale{job=\"pmde\", outcome!=\"\"}",
           "legendFormat": "{{venue}} {{outcome}}",
           "refId": "A",
           "range": true,
@@ -389,7 +389,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "market_resolved{job=\"pmde\"}",
+          "expr": "market_resolved{job=\"pmde\", outcome!=\"\"}",
           "legendFormat": "{{venue}} {{outcome}}",
           "refId": "A",
           "range": true,
@@ -549,7 +549,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (venue, market, outcome) (rate(messages_total{job=\"pmde\"}[5m]))",
+          "expr": "sum by (venue, market, outcome) (rate(messages_total{job=\"pmde\", outcome!=\"\"}[5m]))",
           "legendFormat": "{{venue}} {{outcome}}",
           "refId": "A",
           "range": true,
@@ -603,7 +603,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.5, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\"}[5m])))",
+          "expr": "histogram_quantile(0.5, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\", outcome!=\"\"}[5m])))",
           "legendFormat": "p50 {{venue}}",
           "refId": "A",
           "range": true,
@@ -614,7 +614,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.99, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (venue, le) (rate(ingest_lag_seconds_bucket{job=\"pmde\", outcome!=\"\"}[5m])))",
           "legendFormat": "p99 {{venue}}",
           "refId": "B",
           "range": true,
@@ -668,7 +668,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (venue, market, outcome) (increase(reconnects_total{job=\"pmde\"}[1h]))",
+          "expr": "sum by (venue, market, outcome) (increase(reconnects_total{job=\"pmde\", outcome!=\"\"}[1h]))",
           "legendFormat": "{{venue}} {{outcome}}",
           "refId": "A",
           "range": true,
@@ -722,8 +722,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (venue, outcome, reason) (increase(resyncs_total{job=\"pmde\"}[1h]))",
-          "legendFormat": "{{venue}} {{outcome}} {{reason}}",
+          "expr": "sum by (venue, reason) (increase(resyncs_total{job=\"pmde\", outcome!=\"\"}[1h]))",
+          "legendFormat": "{{venue}} {{reason}}",
           "refId": "A",
           "range": true,
           "instant": false
@@ -776,7 +776,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (venue, market, outcome) (rate(dropped_messages_total{job=\"pmde\"}[5m])) * 60",
+          "expr": "sum by (venue, market, outcome) (rate(dropped_messages_total{job=\"pmde\", outcome!=\"\"}[5m])) * 60",
           "legendFormat": "{{venue}} {{outcome}}",
           "refId": "A",
           "range": true,
