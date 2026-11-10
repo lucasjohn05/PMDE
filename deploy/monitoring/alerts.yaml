@@ -1,0 +1,287 @@
+# Grafana-managed alerting for PMDE, exported from the Grafana Cloud stack
+# (provisioning file format): the "pmde" rule group in folder PMDE, the
+# pmde-email contact point, and the Dec 9 2026 FOMC mute timing.
+#
+# Created through the provisioning API with X-Disable-Provenance, so it
+# stays editable in the Grafana UI. Edits made there aren't reflected here
+# until re-exported. See docs/reference.md, "Monitoring".
+#
+# <ALERT_EMAIL> is a placeholder: the real address is set only in
+# Grafana, and must belong to a member of the Grafana org.
+apiVersion: 1
+groups:
+    - orgId: 1
+      name: pmde
+      folder: ""
+      interval: 1m
+      rules:
+        - uid: pmde-metrics-absent
+          title: pmde metrics absent
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: absent(up{job="pmde"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          for: 5m
+          annotations:
+            description: 'up{job="pmde"} has no samples: pmde, Alloy or the droplet is down, or remote_write is failing.'
+            summary: No pmde metrics reaching Grafana Cloud
+          labels:
+            service: pmde
+            severity: critical
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+        - uid: pmde-book-stale
+          title: pmde book stale
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: (book_stale{job="pmde"} == 1) unless on (venue, market) (market_resolved{job="pmde"} == 1)
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          for: 2m
+          annotations:
+            description: The book has been untrusted for over 2 minutes and the market isn't marked resolved.
+            summary: 'Stale book: {{ $labels.venue }} {{ $labels.market }}'
+          labels:
+            service: pmde
+            severity: warning
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+            mute_time_intervals:
+                - fomc-2026-12-09-decision
+        - uid: pmde-drop-rate
+          title: pmde sustained message drops
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: sum by (venue, market) (rate(dropped_messages_total{job="pmde"}[5m])) * 60 > 1
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          for: 10m
+          annotations:
+            description: The websocket reader has dropped more than 1 message/min for 10 minutes (queue full), forcing repeated resyncs.
+            summary: 'Dropping messages: {{ $labels.venue }} {{ $labels.market }}'
+          labels:
+            service: pmde
+            severity: warning
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+        - uid: pmde-storage-blocked
+          title: pmde storage blocked
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: rate(storage_blocked_seconds_total{job="pmde"}[5m]) > 0.01
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          for: 5m
+          annotations:
+            description: Book goroutines spent more than 1% of the time blocked on the storage writer for 5 minutes (slow disk?).
+            summary: pmde storage writer is holding up the books
+          labels:
+            service: pmde
+            severity: warning
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+        - uid: pmde-reconnect-rate
+          title: pmde reconnect rate
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: sum by (venue, market) (increase(reconnects_total{job="pmde"}[1h])) > 10
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          for: 15m
+          annotations:
+            description: More than 10 reconnects in the last hour, for 15 minutes. Normal is under 1/h.
+            summary: 'Reconnecting often: {{ $labels.venue }} {{ $labels.market }}'
+          labels:
+            service: pmde
+            severity: warning
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+        - uid: pmde-disk-low
+          title: pmde droplet disk low
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: (node_filesystem_avail_bytes{job="integrations/node_exporter", instance="pmde-nyc1", mountpoint="/"} / node_filesystem_size_bytes{job="integrations/node_exporter", instance="pmde-nyc1", mountpoint="/"}) < 0.15
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          for: 15m
+          annotations:
+            description: node_filesystem_avail_bytes on / is under 15% of its size.
+            summary: Droplet root disk under 15% free
+          labels:
+            service: pmde
+            severity: warning
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+contactPoints:
+    - orgId: 1
+      name: pmde-email
+      receivers:
+        - uid: pmde-email
+          type: email
+          settings:
+            addresses: <ALERT_EMAIL>
+            singleEmail: true
+          disableResolveMessage: false
+muteTimes:
+    - orgId: 1
+      name: fomc-2026-12-09-decision
+      time_intervals:
+        - times:
+            - start_time: "13:58"
+              end_time: "24:00"
+          days_of_month: ["9"]
+          months: ["12"]
+          years: ["2026"]
+          location: America/New_York
+        - {times: [{start_time: "00:00", end_time: "12:00"}], days_of_month: ["10"], months: ["12"], years: ["2026"], location: America/New_York}

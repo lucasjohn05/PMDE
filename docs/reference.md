@@ -849,13 +849,19 @@ logs to the Grafana Cloud stack. It also scrapes pmde's `/metrics` every
 - The live config is `/etc/alloy/config.alloy` on the droplet. The
   Grafana Cloud usernames and the access-policy token are inline in its
   `basic_auth` blocks. That file is the only place the real token lives.
-  It isn't in the repo and mustn't be committed.
+  It's owned by root:alloy with mode 640, so only root and the `alloy`
+  service user can read it. It isn't in the repo and mustn't be
+  committed.
 - `deploy/monitoring/config.alloy` is a copy of it with the endpoints,
   usernames and token replaced by placeholders (`<PROMETHEUS_HOST>`,
   `<PROM_USERNAME>`, `<GRAFANA_CLOUD_TOKEN>`, ...). After editing the live
   file, update the copy the same way.
 - `/etc/alloy/config.alloy.bak-20261110` is the installer's config from
-  before the pmde scrape was added. It also holds the token.
+  before the pmde scrape was added. It also holds the token, and has the
+  same owner and mode.
+- `/etc/alloy/config.yaml` is the `alloy` package's sample config for
+  Alloy's OTel engine. It's unused, since the service runs the default
+  engine on `config.alloy`.
 
 **Changing it**, as root on the droplet:
 
@@ -869,6 +875,41 @@ logs to the Grafana Cloud stack. It also scrapes pmde's `/metrics` every
 
 The Alloy UI is on `127.0.0.1:12345` only. Reach it over SSH:
 `ssh -L 12345:localhost:12345 root@<droplet>`.
+
+**Dashboard.** `deploy/monitoring/dashboard.json` is the PMDE dashboard
+(uid `pmde`). Import it under Dashboards → New → Import. Its Prometheus
+data source is a variable, which defaults to `grafanacloud-prom`. Every
+panel query was checked against the stack.
+
+**Alerts.** `deploy/monitoring/alerts.yaml` is an export, in
+provisioning-file format, of what's set up in the stack:
+- The rule group `pmde` in folder PMDE, evaluated every 1m.
+- The `pmde-email` contact point.
+- The `fomc-2026-12-09-decision` mute timing.
+
+Each rule routes to `pmde-email` itself (per-rule notification settings),
+so the stack's notification policy tree isn't involved.
+
+| Rule | Fires when | For |
+|---|---|---|
+| pmde metrics absent | `absent(up{job="pmde"})`: pmde, Alloy or the droplet is down, or remote_write is failing | 5m |
+| (absent rule, No Data) | While `up` is present, `absent()` returns nothing. The rule's No Data state is OK (shown as Normal), so the healthy case doesn't alert. Tested 2026-11-10 by stopping Alloy for 12 min: firing email at +11m, resolved email after the restart | — |
+| pmde book stale | a book is stale and its market isn't resolved; muted 2026-12-09 13:58 ET to 2026-12-10 12:00 ET | 2m |
+| pmde sustained message drops | more than 1 dropped message/min on a market (5m rate) | 10m |
+| pmde storage blocked | storage blocking more than 1% of the time (5m rate) | 5m |
+| pmde reconnect rate | more than 10 reconnects in the last hour on a market | 15m |
+| pmde droplet disk low | under 15% free on / | 15m |
+
+A query with no result means healthy, so No Data maps to OK. The absent
+rule fires about 10 to 11 minutes after metrics stop: `up` only goes
+absent once its last sample is 5 minutes old, and then the 5m `for`
+applies.
+
+The objects were created through the provisioning API with
+`X-Disable-Provenance`, so they stay editable in the Grafana UI. After
+editing them there, re-export them into `alerts.yaml`. The file's
+`<ALERT_EMAIL>` is a placeholder. The real address is set only in
+Grafana, and Grafana Cloud requires it to belong to a member of the org.
 
 ## Venue differences
 
@@ -966,6 +1007,8 @@ Dockerfile                         static build on distroless (nonroot), runs cm
 .dockerignore                      keeps keys, .env, data/ and NOTES.md out of the build context
 deploy/compose.yaml                the deployment: restart unless-stopped, data on a named volume, key as a secret, metrics on 127.0.0.1:9100, capped logs
 deploy/monitoring/config.alloy      Grafana Alloy config from the droplet, credentials replaced by placeholders (the real one: /etc/alloy/config.alloy)
+deploy/monitoring/dashboard.json    Grafana dashboard for pmde's metrics and the droplet's disk (import it)
+deploy/monitoring/alerts.yaml       Grafana alert rules, contact point (address as a placeholder) and the Dec 9 mute timing, exported
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
 cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks fanned out to the divergence tracker and the storage writer, index.json, /metrics
 cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics
