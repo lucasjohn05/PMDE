@@ -836,6 +836,40 @@ Container logs are capped at 5 × 20 MB. Ticks aren't: there's no
 retention yet, but at a few MB a day that's years of disk on the
 smallest droplet.
 
+## Monitoring
+
+Grafana Alloy runs on the droplet as a systemd service (`alloy`). It was
+installed with Grafana Cloud's Linux script and pushes host metrics and
+logs to the Grafana Cloud stack. It also scrapes pmde's `/metrics` every
+15s (`prometheus.scrape "pmde"`: target `127.0.0.1:9100`, `job="pmde"`,
+`instance` = the hostname) and forwards them through the same
+`prometheus.remote_write`.
+
+**Where the config and credentials live:**
+- The live config is `/etc/alloy/config.alloy` on the droplet. The
+  Grafana Cloud usernames and the access-policy token are inline in its
+  `basic_auth` blocks. That file is the only place the real token lives.
+  It isn't in the repo and mustn't be committed.
+- `deploy/monitoring/config.alloy` is a copy of it with the endpoints,
+  usernames and token replaced by placeholders (`<PROMETHEUS_HOST>`,
+  `<PROM_USERNAME>`, `<GRAFANA_CLOUD_TOKEN>`, ...). After editing the live
+  file, update the copy the same way.
+- `/etc/alloy/config.alloy.bak-20261110` is the installer's config from
+  before the pmde scrape was added. It also holds the token.
+
+**Changing it**, as root on the droplet:
+
+| Task | Command |
+|---|---|
+| Check the syntax | `alloy fmt /etc/alloy/config.alloy > /dev/null` |
+| Apply (pmde isn't touched) | `systemctl reload alloy` |
+| The pmde target's health | `curl -s localhost:12345/api/v0/web/components/prometheus.scrape.pmde` |
+| Push failures (should stay 0) | `curl -s localhost:12345/metrics \| grep remote_storage_samples_failed_total` |
+| Logs | `journalctl -u alloy --since -10min` |
+
+The Alloy UI is on `127.0.0.1:12345` only. Reach it over SSH:
+`ssh -L 12345:localhost:12345 root@<droplet>`.
+
 ## Venue differences
 
 The two venues don't expose the same shape of data, and the book code for
@@ -931,6 +965,7 @@ CLAUDE.md                          engineering constraints and working style for
 Dockerfile                         static build on distroless (nonroot), runs cmd/pmde with /data and /etc/pmde/pairs.yaml
 .dockerignore                      keeps keys, .env, data/ and NOTES.md out of the build context
 deploy/compose.yaml                the deployment: restart unless-stopped, data on a named volume, key as a secret, metrics on 127.0.0.1:9100, capped logs
+deploy/monitoring/config.alloy      Grafana Alloy config from the droplet, credentials replaced by placeholders (the real one: /etc/alloy/config.alloy)
 .github/workflows/ci.yml           go vet and go test -race on push and PR (ubuntu-latest)
 cmd/pmde/main.go                   the service: loads pairs.yaml, one client per distinct market, Ticks fanned out to the divergence tracker and the storage writer, index.json, /metrics
 cmd/kalshi/main.go                 debug: one kalshi.Client on a hardcoded market, logs best bid/ask changes, /metrics
