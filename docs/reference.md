@@ -226,8 +226,11 @@ Each binary serves `/metrics` on `-metrics-addr` (default `:9100` for
 they can run side by side). The ingest series are labeled `venue` and
 `market` (the Kalshi ticker or Polymarket asset ID): `cmd/pmde` runs one
 client per market, and a per-venue `book_stale` would just be whichever
-client wrote last. Sum over `market` for per-venue totals. The divergence
-gauges are labeled `pair`. `storage_blocked_seconds_total` has no labels
+client wrote last. Sum over `market` for per-venue totals. In `cmd/pmde`
+they also carry `pair` (the pair's name) and `outcome` (the pair's
+`outcome` field), so a series reads as `polymarket hold`, not a 77-digit
+asset ID. The single-venue debug binaries leave those two empty. The
+divergence gauges are labeled `pair`, with the same name. `storage_blocked_seconds_total` has no labels
 (see Storage).
 
 | Metric | Type | Meaning |
@@ -308,10 +311,15 @@ pairs:
   - name: fed-oct-2026-hold
     kalshi: KXFEDDECISION-26OCT-H0
     polymarket: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
+    outcome: hold
 ```
 
 Each pair is a Kalshi market ticker and the Polymarket asset (token) ID of
-the outcome that means the same as Kalshi's "yes", plus optional `notes`.
+the outcome that means the same as Kalshi's "yes". `outcome` names what
+that "yes" means (`hold`, `hike-25`) and labels the pair's metrics.
+`notes` and `kalshi_last_trade` are optional. A market can be in only one pair, and the
+loader rejects a ticker or asset that appears twice, since a series
+carries one pair and one outcome.
 Pairs are written by hand; nothing matches markets automatically.
 Pairs whose markets have resolved move to an archive file, which only
 `pmde-analyze -config` reads: `pairs-2026-10.yaml` holds the October

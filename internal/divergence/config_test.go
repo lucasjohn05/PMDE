@@ -16,24 +16,22 @@ pairs:
   - name: hold
     kalshi: KX-H0
     polymarket: "` + assetA + `"
+    outcome: hold
   - name: hike
     kalshi: KX-H25 # trailing comment
     polymarket: ` + assetB + ` # unquoted keeps every digit
+    outcome: hike-25
     notes: |
       Rules differ on rounding.
       Second line.
     kalshi_last_trade: 2026-10-28T13:55:00-04:00
-  - name: hold-again-other-asset
-    kalshi: KX-H0
-    polymarket: "` + assetB + `"
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Pair{
-		{Name: "hold", Kalshi: "KX-H0", Polymarket: assetA},
-		{Name: "hike", Kalshi: "KX-H25", Polymarket: assetB, Notes: "Rules differ on rounding.\nSecond line.\n", KalshiLastTrade: "2026-10-28T13:55:00-04:00"},
-		{Name: "hold-again-other-asset", Kalshi: "KX-H0", Polymarket: assetB},
+		{Name: "hold", Kalshi: "KX-H0", Polymarket: assetA, Outcome: "hold"},
+		{Name: "hike", Kalshi: "KX-H25", Polymarket: assetB, Outcome: "hike-25", Notes: "Rules differ on rounding.\nSecond line.\n", KalshiLastTrade: "2026-10-28T13:55:00-04:00"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d pairs, want %d: %+v", len(got), len(want), got)
@@ -54,6 +52,9 @@ pairs:
 
 func TestParsePairsErrors(t *testing.T) {
 	pair := func(name, kalshi, poly string) string {
+		return "  - name: " + name + "\n    kalshi: " + kalshi + "\n    polymarket: \"" + poly + "\"\n    outcome: hold\n"
+	}
+	noOutcome := func(name, kalshi, poly string) string {
 		return "  - name: " + name + "\n    kalshi: " + kalshi + "\n    polymarket: \"" + poly + "\"\n"
 	}
 	tests := []struct {
@@ -61,14 +62,18 @@ func TestParsePairsErrors(t *testing.T) {
 	}{
 		{"empty file", "", "no pairs"},
 		{"empty list", "pairs: []\n", "no pairs"},
-		{"typo in key", "pairs:\n  - name: a\n    kalshi: K\n    polymarkt: \"1\"\n", "polymarkt"},
+		{"typo in key", "pairs:\n  - name: a\n    kalshi: K\n    polymarkt: \"1\"\n    outcome: hold\n", "polymarkt"},
 		{"unknown top-level key", "pair:\n" + pair("a", "K", assetA), "pair"},
 		{"missing name", "pairs:\n" + pair("", "K", assetA), "name is required"},
 		{"missing kalshi", "pairs:\n" + pair("a", "", assetA), "kalshi ticker is required"},
 		{"missing polymarket", "pairs:\n" + pair("a", "K", ""), "asset ID is required"},
 		{"condition ID instead of token", "pairs:\n" + pair("a", "K", "0x876506d8b2bd7a0d3fa4fe18c024eee6e1dd81ee24c26795dadd6cfe4a7b5d0d"), "not an asset (token) ID"},
 		{"duplicate name", "pairs:\n" + pair("a", "K1", assetA) + pair("a", "K2", assetB), "duplicate name"},
-		{"duplicate markets", "pairs:\n" + pair("a", "K", assetA) + pair("b", "K", assetA), "same markets as pair \"a\""},
+		{"duplicate markets", "pairs:\n" + pair("a", "K", assetA) + pair("b", "K", assetA), "already in pair \"a\""},
+		{"kalshi market in two pairs", "pairs:\n" + pair("a", "K", assetA) + pair("b", "K", assetB), "kalshi market K is already in pair \"a\""},
+		{"polymarket asset in two pairs", "pairs:\n" + pair("a", "K1", assetA) + pair("b", "K2", assetA), "polymarket asset " + assetA + " is already in pair \"a\""},
+		{"missing outcome", "pairs:\n" + noOutcome("a", "K", assetA), "outcome is required"},
+		{"outcome with spaces", "pairs:\n" + noOutcome("a", "K", assetA) + "    outcome: Hike 25\n", "lowercase letters"},
 		{"not yaml", "pairs: [", "parsing pair config"},
 		{"last trade: bare date", "pairs:\n" + pair("a", "K", assetA) + "    kalshi_last_trade: 2026-10-28\n", "explicit offset"},
 		{"last trade: UTC Z", "pairs:\n" + pair("a", "K", assetA) + "    kalshi_last_trade: 2026-10-28T17:55:00Z\n", "explicit offset"},
@@ -84,13 +89,16 @@ func TestParsePairsErrors(t *testing.T) {
 	}
 }
 
-// TestRepoPairsFile checks that the committed pairs.yaml is valid.
+// TestRepoPairsFile checks that the committed pair configs are valid: the
+// live one, and the archive pmde-analyze reads.
 func TestRepoPairsFile(t *testing.T) {
-	pairs, err := LoadPairs("../../pairs.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pairs) == 0 {
-		t.Fatal("pairs.yaml has no pairs")
+	for _, path := range []string{"../../pairs.yaml", "../../pairs-2026-10.yaml"} {
+		pairs, err := LoadPairs(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pairs) == 0 {
+			t.Fatalf("%s has no pairs", path)
+		}
 	}
 }

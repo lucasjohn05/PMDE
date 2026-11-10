@@ -109,8 +109,9 @@ func main() {
 		store.Send(ctx, t)
 	}
 
-	// One client (one connection) per distinct market: a market in
-	// several pairs is subscribed once.
+	// One client (one connection) per market. The pair config allows a
+	// market in only one pair (its metrics are labelled with that pair's
+	// name and outcome), so seen is a guard rather than a dedupe.
 	var wg sync.WaitGroup
 	seen := map[string]bool{}
 	for _, p := range pairs {
@@ -122,7 +123,7 @@ func main() {
 				Header:  func() (http.Header, error) { return kalshi.SignedHeader(privKey, keyID) },
 				OnTick:  send,
 				Logf:    prefixed(p.Kalshi),
-				Metrics: m.Market(tick.Kalshi, p.Kalshi),
+				Metrics: m.PairMarket(tick.Kalshi, p.Kalshi, p.Name, p.Outcome),
 			}
 			wg.Go(func() { c.Run(ctx) })
 		}
@@ -133,7 +134,7 @@ func main() {
 				AssetID: p.Polymarket,
 				OnTick:  send,
 				Logf:    prefixed(short(p.Polymarket)),
-				Metrics: m.Market(tick.Polymarket, p.Polymarket),
+				Metrics: m.PairMarket(tick.Polymarket, p.Polymarket, p.Name, p.Outcome),
 				// Stops the client once a market that sends no book has
 				// resolved, instead of resubscribing to it forever.
 				Resolved: func(ctx context.Context, assetID string) (bool, error) {

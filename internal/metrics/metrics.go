@@ -29,6 +29,13 @@ const (
 	ResyncInvalid   = "invalid_update" // a message couldn't be parsed or applied
 )
 
+// marketLabels label every per-market series. pair and outcome come from
+// the pair config (the pair's name and its outcome field), so dashboards
+// and alerts can name a market by what it means rather than by its ID
+// (Polymarket's are 77-digit token IDs). venue and market stay, so
+// queries matching on them keep working.
+var marketLabels = []string{"venue", "market", "pair", "outcome"}
+
 var resyncReasons = []string{ResyncSeqGap, ResyncDropped, ResyncReconnect, ResyncInvalid}
 
 // Metrics holds the metric vectors, registered on one registry.
@@ -53,33 +60,33 @@ func New(reg prometheus.Registerer) *Metrics {
 		messages: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "messages_total",
 			Help: "Messages read off the venue websocket, including ones later dropped. Excludes heartbeats.",
-		}, []string{"venue", "market"}),
+		}, marketLabels),
 		dropped: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "dropped_messages_total",
 			Help: "Messages the websocket reader dropped because the queue to the book goroutine was full.",
-		}, []string{"venue", "market"}),
+		}, marketLabels),
 		reconnect: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "reconnects_total",
 			Help: "Reconnect attempts: every dial after the first, failed ones included.",
-		}, []string{"venue", "market"}),
+		}, marketLabels),
 		resyncs: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "resyncs_total",
 			Help: "Times a trusted book was lost and had to be rebuilt from a fresh snapshot, by what broke it.",
-		}, []string{"venue", "market", "reason"}),
+		}, append(marketLabels[:len(marketLabels):len(marketLabels)], "reason")),
 		stale: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "book_stale",
 			Help: "1 while the venue's book is untrusted (not yet synced, stale, or reconnecting), else 0.",
-		}, []string{"venue", "market"}),
+		}, marketLabels),
 		resolved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "market_resolved",
 			Help: "1 once the venue has said the market resolved and the client stopped reconnecting to it (book_stale is then 0: there is no book to keep), else 0.",
-		}, []string{"venue", "market"}),
+		}, marketLabels),
 		lag: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "ingest_lag_seconds",
 			Help: "Receive time minus the venue's message timestamp. Includes clock skew between the venue and this host.",
 			// 1ms to ~16s, doubling.
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15),
-		}, []string{"venue", "market"}),
+		}, marketLabels),
 		divMid: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "divergence_mid_bps",
 			Help: "Kalshi mid minus Polymarket mid, in bps. Absent while either book has no trusted top of book.",
@@ -101,19 +108,29 @@ func New(reg prometheus.Registerer) *Metrics {
 // series it can produce created up front: counters at 0, book_stale at 1
 // (nothing is trusted until the first snapshot). A series that only
 // appears after its first event is hard to alert on.
+//
+// pair and outcome are left empty, which Prometheus treats as absent: for
+// clients that aren't part of a configured pair (the single-venue debug
+// commands). cmd/pmde uses PairMarket.
 func (m *Metrics) Market(venue, market string) *Market {
+	return m.PairMarket(venue, market, "", "")
+}
+
+// PairMarket is Market for a market in a configured pair: its series also
+// carry pair (the pair's name) and outcome (the pair's outcome field).
+func (m *Metrics) PairMarket(venue, market, pair, outcome string) *Market {
 	v := &Market{
-		messages:  m.messages.WithLabelValues(venue, market),
-		dropped:   m.dropped.WithLabelValues(venue, market),
-		reconnect: m.reconnect.WithLabelValues(venue, market),
+		messages:  m.messages.WithLabelValues(venue, market, pair, outcome),
+		dropped:   m.dropped.WithLabelValues(venue, market, pair, outcome),
+		reconnect: m.reconnect.WithLabelValues(venue, market, pair, outcome),
 		resyncs:   make(map[string]prometheus.Counter, len(resyncReasons)),
-		stale:     m.stale.WithLabelValues(venue, market),
-		resolved:  m.resolved.WithLabelValues(venue, market),
-		lag:       m.lag.WithLabelValues(venue, market),
+		stale:     m.stale.WithLabelValues(venue, market, pair, outcome),
+		resolved:  m.resolved.WithLabelValues(venue, market, pair, outcome),
+		lag:       m.lag.WithLabelValues(venue, market, pair, outcome),
 	}
 	v.resolved.Set(0)
 	for _, r := range resyncReasons {
-		v.resyncs[r] = m.resyncs.WithLabelValues(venue, market, r)
+		v.resyncs[r] = m.resyncs.WithLabelValues(venue, market, pair, outcome, r)
 	}
 	v.stale.Set(1)
 	return v

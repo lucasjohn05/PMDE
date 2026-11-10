@@ -26,6 +26,12 @@ type Pair struct {
 	// complement.
 	Polymarket string `yaml:"polymarket"`
 
+	// Outcome names what the pair's "yes" means, in a few lowercase
+	// characters ("hold", "hike-25"). Required. It labels every
+	// per-market metric (with Name as pair), so dashboards and alerts can
+	// say "polymarket hold" instead of a 77-digit asset ID.
+	Outcome string `yaml:"outcome"`
+
 	// Notes is free text for whoever maintains the pair: typically how
 	// the two venues' resolution rules differ. Optional; the code doesn't
 	// read it.
@@ -94,7 +100,8 @@ func ParsePairs(data []byte) ([]Pair, error) {
 	}
 
 	names := map[string]bool{}
-	markets := map[[2]string]string{}
+	kalshiPair := map[string]string{} // market -> pair name
+	polyPair := map[string]string{}
 	for i, p := range c.Pairs {
 		switch {
 		case p.Name == "":
@@ -108,17 +115,27 @@ func ParsePairs(data []byte) ([]Pair, error) {
 			// mistake is pasting the market's condition ID (0x...) or
 			// its slug instead.
 			return nil, fmt.Errorf("pair %q: polymarket %q is not an asset (token) ID; those are long decimal numbers, not the 0x... condition ID", p.Name, p.Polymarket)
+		case p.Outcome == "":
+			return nil, fmt.Errorf("pair %q: outcome is required (what the pair's yes means, e.g. hold)", p.Name)
+		case !validOutcome(p.Outcome):
+			return nil, fmt.Errorf("pair %q: outcome %q must be lowercase letters, digits, '-', '_' or '.'", p.Name, p.Outcome)
 		case p.KalshiLastTrade != "" && !validLastTrade(p.KalshiLastTrade):
 			return nil, fmt.Errorf("pair %q: kalshi_last_trade %q must be RFC 3339 with an explicit offset, like 2026-10-28T13:59:00-04:00", p.Name, p.KalshiLastTrade)
 		case names[p.Name]:
 			return nil, fmt.Errorf("pair %q: duplicate name", p.Name)
 		}
 		names[p.Name] = true
-		key := [2]string{p.Kalshi, p.Polymarket}
-		if other, dup := markets[key]; dup {
-			return nil, fmt.Errorf("pair %q: same markets as pair %q", p.Name, other)
+		// One pair per market: a market's metrics carry its pair and
+		// outcome as labels, and a series can only have one of each.
+		// (cmd/pmde opens one client per market, so sharing would work
+		// for the books, but not for the labels.)
+		if other, dup := kalshiPair[p.Kalshi]; dup {
+			return nil, fmt.Errorf("pair %q: kalshi market %s is already in pair %q; a market can be in only one pair", p.Name, p.Kalshi, other)
 		}
-		markets[key] = p.Name
+		if other, dup := polyPair[p.Polymarket]; dup {
+			return nil, fmt.Errorf("pair %q: polymarket asset %s is already in pair %q; a market can be in only one pair", p.Name, p.Polymarket, other)
+		}
+		kalshiPair[p.Kalshi], polyPair[p.Polymarket] = p.Name, p.Name
 	}
 	return c.Pairs, nil
 }
@@ -129,6 +146,16 @@ func ParsePairs(data []byte) ([]Pair, error) {
 func validLastTrade(s string) bool {
 	_, err := time.Parse(time.RFC3339, s)
 	return err == nil && len(s) >= 6 && (s[len(s)-6] == '+' || s[len(s)-6] == '-')
+}
+
+// validOutcome reports whether s is a short label-friendly name.
+func validOutcome(s string) bool {
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func allDigits(s string) bool {

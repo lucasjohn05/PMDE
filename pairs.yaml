@@ -8,6 +8,11 @@
 #               same as Kalshi's "yes" (each Polymarket market has two
 #               tokens: take the one for the matching outcome, usually
 #               "Yes"). Not the market's 0x... condition ID.
+#   outcome:    what the pair's "yes" means, in lowercase (hold, hike-25).
+#               Required. With name, it labels every per-market metric
+#               (pair=<name>, outcome=<outcome>), so dashboards and alerts
+#               can say "polymarket hold" instead of an asset ID. A market
+#               can be in only one pair, since its series carry one of each.
 #   notes:      optional free text; here, how the venues' resolution rules
 #               differ, so whoever reads the divergence knows what it
 #               compares
@@ -37,6 +42,7 @@ pairs:
     kalshi: KXFEDDECISION-26DEC-H0 # Fed maintains rate
     # "Will there be no change in Fed interest rates after the December 2026 meeting?" (Yes)
     polymarket: "42865728742506860386768556888821101266630139112044622335353850919229585308601"
+    outcome: hold
     # The API's close_time, 1:59 PM ET on Dec 9, after the Nov 1 switch to
     # EST (-05:00).
     kalshi_last_trade: 2026-12-09T13:59:00-05:00
@@ -63,6 +69,7 @@ pairs:
     kalshi: KXFEDDECISION-26DEC-H25 # Hike 25bps
     # "Will the Fed increase interest rates by 25 bps after the December 2026 meeting?" (Yes)
     polymarket: "111662129652828266889360374468657435151479595863413519836161861837506140152890"
+    outcome: hike-25
     kalshi_last_trade: 2026-12-09T13:59:00-05:00
     notes: |
       Same rules as fed-oct-2026-hike-25 (now in pairs-2026-10.yaml), for the

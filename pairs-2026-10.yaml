@@ -6,7 +6,8 @@
 # Same format and sources as pairs.yaml (see the comments there). The
 # pairs are unchanged from when they were live, apart from
 # kalshi_last_trade, corrected from 13:55 to the 13:59 close_time on
-# 2026-11-10.
+# 2026-11-10, and outcome, added the same day when pairs gained
+# one (pmde-analyze requires it).
 
 pairs:
   # FOMC decision, October 27-28 2026 (statement Oct 28, 2:00 PM ET).
@@ -18,6 +19,7 @@ pairs:
     kalshi: KXFEDDECISION-26OCT-H0 # Fed maintains rate
     # "Will there be no change in Fed interest rates after the October 2026 meeting?" (Yes)
     polymarket: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
+    outcome: hold
     # The API's close_time, 1:59 PM ET (EDT, -04:00). The contract terms
     # say 1:55, but trades ran until 13:58:58 and the book closed at 13:59.
     kalshi_last_trade: 2026-10-28T13:59:00-04:00
@@ -48,6 +50,7 @@ pairs:
     kalshi: KXFEDDECISION-26OCT-H25 # Hike 25bps
     # "Will the Fed increase interest rates by 25 bps after the October 2026 meeting?" (Yes)
     polymarket: "55159722761418013044126414276680602270318000841690689684819994448621694923050"
+    outcome: hike-25
     kalshi_last_trade: 2026-10-28T13:59:00-04:00
     notes: |
       Same outcome for a standard 25 bps hike. Both mean exactly 25: a

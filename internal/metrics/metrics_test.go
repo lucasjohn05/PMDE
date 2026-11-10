@@ -17,18 +17,18 @@ import (
 func TestMarketSeriesExistUpFront(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(reg)
-	m.Market("kalshi", "K1")
+	m.PairMarket("kalshi", "K1", "fed-hold", "hold")
 
 	want := `
 # HELP book_stale 1 while the venue's book is untrusted (not yet synced, stale, or reconnecting), else 0.
 # TYPE book_stale gauge
-book_stale{market="K1",venue="kalshi"} 1
+book_stale{market="K1",outcome="hold",pair="fed-hold",venue="kalshi"} 1
 # HELP resyncs_total Times a trusted book was lost and had to be rebuilt from a fresh snapshot, by what broke it.
 # TYPE resyncs_total counter
-resyncs_total{market="K1",reason="dropped",venue="kalshi"} 0
-resyncs_total{market="K1",reason="invalid_update",venue="kalshi"} 0
-resyncs_total{market="K1",reason="reconnect",venue="kalshi"} 0
-resyncs_total{market="K1",reason="seq_gap",venue="kalshi"} 0
+resyncs_total{market="K1",outcome="hold",pair="fed-hold",reason="dropped",venue="kalshi"} 0
+resyncs_total{market="K1",outcome="hold",pair="fed-hold",reason="invalid_update",venue="kalshi"} 0
+resyncs_total{market="K1",outcome="hold",pair="fed-hold",reason="reconnect",venue="kalshi"} 0
+resyncs_total{market="K1",outcome="hold",pair="fed-hold",reason="seq_gap",venue="kalshi"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "book_stale", "resyncs_total"); err != nil {
 		t.Fatal(err)
@@ -60,15 +60,15 @@ func TestMarketRecords(t *testing.T) {
 		c    prometheus.Collector
 		want float64
 	}{
-		{m.messages.WithLabelValues("kalshi", "K1"), 2},
-		{m.messages.WithLabelValues("polymarket", "P1"), 1},
-		{m.dropped.WithLabelValues("kalshi", "K1"), 1},
-		{m.reconnect.WithLabelValues("kalshi", "K1"), 1},
-		{m.resyncs.WithLabelValues("kalshi", "K1", ResyncSeqGap), 1},
-		{m.resyncs.WithLabelValues("kalshi", "K1", ResyncInvalid), 1},
-		{m.resyncs.WithLabelValues("kalshi", "K1", ResyncDropped), 0},
-		{m.stale.WithLabelValues("kalshi", "K1"), 0},
-		{m.stale.WithLabelValues("polymarket", "P1"), 1},
+		{m.messages.WithLabelValues("kalshi", "K1", "", ""), 2},
+		{m.messages.WithLabelValues("polymarket", "P1", "", ""), 1},
+		{m.dropped.WithLabelValues("kalshi", "K1", "", ""), 1},
+		{m.reconnect.WithLabelValues("kalshi", "K1", "", ""), 1},
+		{m.resyncs.WithLabelValues("kalshi", "K1", "", "", ResyncSeqGap), 1},
+		{m.resyncs.WithLabelValues("kalshi", "K1", "", "", ResyncInvalid), 1},
+		{m.resyncs.WithLabelValues("kalshi", "K1", "", "", ResyncDropped), 0},
+		{m.stale.WithLabelValues("kalshi", "K1", "", ""), 0},
+		{m.stale.WithLabelValues("polymarket", "P1", "", ""), 1},
 	}
 	for i, c := range checks {
 		if got := testutil.ToFloat64(c.c); got != c.want {
@@ -82,42 +82,42 @@ func TestMarketRecords(t *testing.T) {
 	want := `
 # HELP ingest_lag_seconds Receive time minus the venue's message timestamp. Includes clock skew between the venue and this host.
 # TYPE ingest_lag_seconds histogram
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.001"} 0
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.002"} 0
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.004"} 0
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.008"} 0
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.016"} 0
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.032"} 0
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.064"} 1
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.128"} 1
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.256"} 1
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="0.512"} 1
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="1.024"} 1
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="2.048"} 1
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="4.096"} 2
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="8.192"} 2
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="16.384"} 2
-ingest_lag_seconds_bucket{market="K1",venue="kalshi",le="+Inf"} 2
-ingest_lag_seconds_sum{market="K1",venue="kalshi"} 3.04
-ingest_lag_seconds_count{market="K1",venue="kalshi"} 2
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.001"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.002"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.004"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.008"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.016"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.032"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.064"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.128"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.256"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="0.512"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="1.024"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="2.048"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="4.096"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="8.192"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="16.384"} 0
-ingest_lag_seconds_bucket{market="P1",venue="polymarket",le="+Inf"} 0
-ingest_lag_seconds_sum{market="P1",venue="polymarket"} 0
-ingest_lag_seconds_count{market="P1",venue="polymarket"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.001"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.002"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.004"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.008"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.016"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.032"} 0
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.064"} 1
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.128"} 1
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.256"} 1
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="0.512"} 1
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="1.024"} 1
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="2.048"} 1
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="4.096"} 2
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="8.192"} 2
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="16.384"} 2
+ingest_lag_seconds_bucket{market="K1",outcome="",pair="",venue="kalshi",le="+Inf"} 2
+ingest_lag_seconds_sum{market="K1",outcome="",pair="",venue="kalshi"} 3.04
+ingest_lag_seconds_count{market="K1",outcome="",pair="",venue="kalshi"} 2
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.001"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.002"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.004"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.008"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.016"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.032"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.064"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.128"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.256"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="0.512"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="1.024"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="2.048"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="4.096"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="8.192"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="16.384"} 0
+ingest_lag_seconds_bucket{market="P1",outcome="",pair="",venue="polymarket",le="+Inf"} 0
+ingest_lag_seconds_sum{market="P1",outcome="",pair="",venue="polymarket"} 0
+ingest_lag_seconds_count{market="P1",outcome="",pair="",venue="polymarket"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "ingest_lag_seconds"); err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ divergence_mid_bps{pair="hold"} -50
 
 func TestServe(t *testing.T) {
 	reg := NewRegistry()
-	New(reg).Market("polymarket", "P1").Message()
+	New(reg).PairMarket("polymarket", "P1", "fed-hold", "hold").Message()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	addr, err := Serve(ctx, "127.0.0.1:0", reg, t.Logf)
@@ -200,9 +200,9 @@ func TestServe(t *testing.T) {
 		t.Fatalf("GET /metrics: status %d", resp.StatusCode)
 	}
 	for _, want := range []string{
-		`messages_total{market="P1",venue="polymarket"} 1`,
-		`book_stale{market="P1",venue="polymarket"} 1`,
-		`resyncs_total{market="P1",reason="seq_gap",venue="polymarket"} 0`,
+		`messages_total{market="P1",outcome="hold",pair="fed-hold",venue="polymarket"} 1`,
+		`book_stale{market="P1",outcome="hold",pair="fed-hold",venue="polymarket"} 1`,
+		`resyncs_total{market="P1",outcome="hold",pair="fed-hold",reason="seq_gap",venue="polymarket"} 0`,
 		"go_goroutines",
 	} {
 		if !strings.Contains(string(body), want) {
@@ -225,5 +225,44 @@ func TestServe(t *testing.T) {
 			t.Fatal("server still answering after ctx was cancelled")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestPairMarketLabels: every per-market series carries the pair and
+// outcome as well as venue and market, so a dashboard can show "polymarket
+// hold" instead of a 77-digit asset ID, and queries on venue/market still
+// match.
+func TestPairMarketLabels(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg)
+	m.PairMarket("polymarket", "4286", "fed-dec-2026-hold", "hold")
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"venue": "polymarket", "market": "4286", "pair": "fed-dec-2026-hold", "outcome": "hold"}
+	seen := map[string]bool{}
+	for _, mf := range families {
+		switch mf.GetName() {
+		case "divergence_mid_bps", "divergence_gap_bps", "storage_blocked_seconds_total":
+			continue // not per-market
+		}
+		for _, s := range mf.GetMetric() {
+			have := map[string]string{}
+			for _, l := range s.GetLabel() {
+				have[l.GetName()] = l.GetValue()
+			}
+			for k, v := range want {
+				if have[k] != v {
+					t.Errorf("%s: label %s = %q, want %q (labels %v)", mf.GetName(), k, have[k], v, have)
+				}
+			}
+		}
+		seen[mf.GetName()] = true
+	}
+	for _, name := range []string{"messages_total", "dropped_messages_total", "reconnects_total", "resyncs_total", "book_stale", "market_resolved", "ingest_lag_seconds"} {
+		if !seen[name] {
+			t.Errorf("no %s series", name)
+		}
 	}
 }
