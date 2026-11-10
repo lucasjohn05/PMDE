@@ -14,6 +14,8 @@ path tying their prices together. Measuring it means holding both venues'
 order books to a common price representation and comparing them
 continuously.
 
+Findings: [Kalshi vs Polymarket on the October 2026 FOMC decision](docs/fomc-oct-2026.md).
+
 ## Status
 
 `cmd/pmde` is the service. It reads venue pairs from `pairs.yaml`, runs a
@@ -591,6 +593,10 @@ pmde-analyze -data-dir data -pair fed-dec-2026-hold -from 2026-10-22 -to 2026-10
 
 `-from`/`-to` take a UTC date or RFC 3339 (`-to` with a date means the
 end of that day); by default the report covers all the data there is.
+`-quotes-at` replaces the report: give it comma-separated RFC 3339
+times, and for each pair it prints the Kalshi and Polymarket quotes in
+effect at each time, from the tick files. Each line names the tick the
+quote came from, or says there was no two-sided quote.
 To pull the droplet's data, see the "Copy the data out" row under
 Running it.
 
