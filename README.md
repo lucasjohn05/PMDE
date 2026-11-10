@@ -104,8 +104,10 @@ API key. To deploy on a Linux host with Docker, see
 ## Status
 
 PMDE is recording the two December 9 2026 FOMC pairs (hold and hike-25)
-on the droplet. That run started on November 10 at commit 4bb384d. The
-October pairs are archived in `pairs-2026-10.yaml`.
+on the droplet. The current run started on November 10 at commit e03eeb4.
+The October pairs are archived in `pairs-2026-10.yaml`.
+
+Live dashboard: https://maroonlimpet2967.grafana.net/public-dashboards/bbc5bbc97e4749908921f031ba0af07b
 
 The full design notes, metrics, storage format and deploy steps are in
 [docs/reference.md](docs/reference.md). The build history is in the
