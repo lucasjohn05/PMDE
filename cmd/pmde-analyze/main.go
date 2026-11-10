@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/lucasjohn05/pmde/internal/analysis"
@@ -35,6 +36,7 @@ func main() {
 	window := flag.Duration("follow-window", def.FollowWindow, "how long after one venue's move the other's still counts as following")
 	kalshiAPI := flag.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base the market close_time is fetched from, as each pair's cutoff; empty uses only the config's kalshi_last_trade")
 	maxLag := flag.Duration("corr-max-lag", def.CorrMaxLag, "largest lag for the 1s cross-correlation, each direction")
+	quotesAt := flag.String("quotes-at", "", "instead of the report, print each pair's Kalshi and Polymarket quotes in effect at these times (comma-separated RFC 3339, e.g. 2026-10-28T13:59:59.999-04:00), from the tick files")
 	flag.Parse()
 
 	from, err := parseTime(*fromFlag, false)
@@ -70,6 +72,13 @@ func main() {
 			log.Fatalf("no pair %q in %s", *pairName, *configPath)
 		}
 		pairs = found
+	}
+
+	if *quotesAt != "" {
+		if err := writeQuotes(*dataDir, pairs, *quotesAt); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 
 	var reports []analysis.Report
@@ -116,6 +125,52 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+}
+
+// writeQuotes prints every pair's quotes at the comma-separated times in
+// list (-quotes-at).
+func writeQuotes(dataDir string, pairs []divergence.Pair, list string) error {
+	var ats []time.Time
+	for _, s := range strings.Split(list, ",") {
+		at, err := time.Parse(time.RFC3339, strings.TrimSpace(s))
+		if err != nil {
+			return fmt.Errorf("-quotes-at: %q is not RFC 3339", s)
+		}
+		ats = append(ats, at)
+	}
+	first, last := ats[0], ats[0]
+	for _, at := range ats {
+		first, last = minTime(first, at), maxTime(last, at)
+	}
+	for i, p := range pairs {
+		// Load reads the day before from too, so the state at first is
+		// known unless the market was silent for over a day.
+		k, poly, _, err := analysis.Load(dataDir, p, first, last.Add(time.Millisecond))
+		if err != nil {
+			return err
+		}
+		if i > 0 {
+			fmt.Println()
+		}
+		if err := analysis.WriteQuotes(os.Stdout, p.Name, k, poly, ats); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // closeTimeFunc fetches a Kalshi market's close_time from base, or is
