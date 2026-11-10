@@ -877,9 +877,10 @@ The Alloy UI is on `127.0.0.1:12345` only. Reach it over SSH:
 `ssh -L 12345:localhost:12345 root@<droplet>`.
 
 **Dashboard.** `deploy/monitoring/dashboard.json` is the PMDE dashboard
-(uid `pmde`). Import it under Dashboards → New → Import. Its Prometheus
-data source is a variable, which defaults to `grafanacloud-prom`. Every
-panel query was checked against the stack.
+(uid `pmde`). It's in Grafana's standard export format: Dashboards →
+New → Import asks for the Prometheus data source pmde's metrics go to
+(the `DS_PROMETHEUS` input), so it imports into any stack. Every panel
+query was checked against the stack.
 
 **Alerts.** `deploy/monitoring/alerts.yaml` is an export, in
 provisioning-file format, of what's set up in the stack:
