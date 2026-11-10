@@ -90,7 +90,7 @@ groups:
           for: 2m
           annotations:
             description: The book has been untrusted for over 2 minutes and the market isn't marked resolved.
-            summary: 'Stale book: {{ $labels.venue }} {{ $labels.market }}'
+            summary: 'Stale book: {{ $labels.venue }} {{ $labels.outcome }} ({{ $labels.pair }})'
           labels:
             service: pmde
             severity: warning
@@ -109,7 +109,7 @@ groups:
                 to: 0
               datasourceUid: grafanacloud-prom
               model:
-                expr: sum by (venue, market) (rate(dropped_messages_total{job="pmde"}[5m])) * 60 > 1
+                expr: sum by (venue, market, pair, outcome) (rate(dropped_messages_total{job="pmde"}[5m])) * 60 > 1
                 instant: true
                 intervalMs: 1000
                 maxDataPoints: 43200
@@ -133,7 +133,7 @@ groups:
           for: 10m
           annotations:
             description: The websocket reader has dropped more than 1 message/min for 10 minutes (queue full), forcing repeated resyncs.
-            summary: 'Dropping messages: {{ $labels.venue }} {{ $labels.market }}'
+            summary: 'Dropping messages: {{ $labels.venue }} {{ $labels.outcome }} ({{ $labels.pair }})'
           labels:
             service: pmde
             severity: warning
@@ -191,7 +191,7 @@ groups:
                 to: 0
               datasourceUid: grafanacloud-prom
               model:
-                expr: sum by (venue, market) (increase(reconnects_total{job="pmde"}[1h])) > 10
+                expr: sum by (venue, market, pair, outcome) (increase(reconnects_total{job="pmde"}[1h])) > 10
                 instant: true
                 intervalMs: 1000
                 maxDataPoints: 43200
@@ -215,7 +215,7 @@ groups:
           for: 15m
           annotations:
             description: More than 10 reconnects in the last hour, for 15 minutes. Normal is under 1/h.
-            summary: 'Reconnecting often: {{ $labels.venue }} {{ $labels.market }}'
+            summary: 'Reconnecting often: {{ $labels.venue }} {{ $labels.outcome }} ({{ $labels.pair }})'
           labels:
             service: pmde
             severity: warning
