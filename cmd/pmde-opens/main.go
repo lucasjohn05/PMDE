@@ -6,6 +6,12 @@
 // allowlisted series settled since -since, how it settled and its
 // earliest prices, into <data-dir>/opens/backfill.jsonl: one row per
 // market. It only reads Kalshi's public REST API, so it needs no key.
+//
+//	pmde-opens report -data-dir data -deciles
+//
+// reads those rows and prints, per series, a table ranked by score
+// (miscalibration x modal opening size x opens per day), and writes the
+// same table as CSV to <data-dir>/opens/report.csv. It reads no network.
 package main
 
 import (
@@ -32,13 +38,15 @@ func main() {
 	switch os.Args[1] {
 	case "backfill":
 		backfill(os.Args[2:])
+	case "report":
+		report(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]   (-h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n(-h after either for its flags)")
 	os.Exit(2)
 }
 
@@ -81,4 +89,44 @@ func backfill(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func report(args []string) {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "data", "data directory; rows are read from its opens/backfill.jsonl")
+	csvPath := fs.String("csv", "", "where to write the table as CSV (default: <data-dir>/opens/report.csv; \"-\" for none)")
+	minOpens := fs.Int("min-opens", 1, "leave out series with fewer opens than this")
+	deciles := fs.Bool("deciles", false, "also print each series' calibration table by opening-mid decile")
+	fs.Parse(args)
+
+	dir := filepath.Join(*dataDir, "opens")
+	rows, err := opens.LoadRows(dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(rows) == 0 {
+		log.Fatalf("no rows in %s; run pmde-opens backfill first", filepath.Join(dir, "backfill.jsonl"))
+	}
+	reps := opens.Report(rows, *minOpens)
+	if err := opens.WriteText(os.Stdout, reps, *deciles); err != nil {
+		log.Fatal(err)
+	}
+	if *csvPath == "-" {
+		return
+	}
+	if *csvPath == "" {
+		*csvPath = filepath.Join(dir, "report.csv")
+	}
+	f, err := os.Create(*csvPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := opens.WriteCSV(f, reps); err != nil {
+		f.Close()
+		log.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("wrote %s", *csvPath)
 }
