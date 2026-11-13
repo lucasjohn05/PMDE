@@ -17,11 +17,14 @@ import (
 )
 
 const (
-	// restInterval is the default spacing between request starts: 4
-	// requests a second. Kalshi's lowest tier (Basic) allows 200 read
-	// tokens a second at 10 tokens a request, so 20 a second; this stays
-	// well under it and leaves room for whatever else uses the key.
-	restInterval = 250 * time.Millisecond
+	// restInterval is the default spacing between request starts: 2
+	// requests a second. Kalshi documents 200 read tokens a second at 10
+	// tokens a request for its lowest tier (20 a second), but these
+	// endpoints are public and unauthenticated calls are charged to the
+	// IP's budget, which is smaller and not documented: in November 2026
+	// 4 a second drew occasional 429s from /markets/trades. The backoff
+	// absorbs those, but it's better not to cause them.
+	restInterval = 500 * time.Millisecond
 
 	// restInFlight bounds how many requests are in flight at once.
 	restInFlight = 2

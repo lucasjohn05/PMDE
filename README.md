@@ -101,6 +101,18 @@ Polymarket's market channel needs no credentials, but Kalshi's needs an
 API key. To deploy on a Linux host with Docker, see
 [docs/reference.md](docs/reference.md#deploying).
 
+## Open scanner
+
+A second, record-only tool in the same repo looks for Kalshi series
+whose opening quotes come from one market maker running a crude model.
+`pmde-scan` watches for markets about to open and records each one's
+book from a few seconds before its `open_time` to a minute after;
+`pmde-opens backfill` adds how each market settled and its earliest
+prices; `pmde-opens report` ranks series by miscalibration x modal
+opening size x opens per day. It reuses the Kalshi client, book and
+JSONL storage above. See [docs/open-scanner.md](docs/open-scanner.md)
+for how to run it and what the Kalshi API did and didn't allow.
+
 ## Status
 
 PMDE is recording the two December 9 2026 FOMC pairs (hold and hike-25)

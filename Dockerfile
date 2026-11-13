@@ -9,6 +9,9 @@ COPY . .
 #   GIT_COMMIT=$(git rev-parse HEAD) docker compose ... up -d --build
 ARG GIT_COMMIT=unknown
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.commit=${GIT_COMMIT}" -o /out/pmde ./cmd/pmde
+# The open scanner's two binaries (docs/open-scanner.md). They ride in
+# the same image; the compose file's "scan" service runs pmde-scan.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pmde-scan ./cmd/pmde-scan  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pmde-opens ./cmd/pmde-opens
 # An empty data directory owned by the runtime user: a named volume
 # mounted at /data starts out with this ownership, so pmde can write it.
 RUN mkdir -p /out/data
@@ -17,8 +20,10 @@ RUN mkdir -p /out/data
 # no shell and no package manager, and runs as uid/gid 65532 ("nonroot").
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/pmde /usr/local/bin/pmde
+COPY --from=build /out/pmde-scan /out/pmde-opens /usr/local/bin/
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY pairs.yaml /etc/pmde/pairs.yaml
+COPY opens.yaml /etc/pmde/opens.yaml
 USER 65532:65532
 VOLUME /data
 # Metrics. Publish it on the host's loopback only (see deploy/).

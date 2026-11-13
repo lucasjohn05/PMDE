@@ -192,7 +192,8 @@ func TestCaptureRecordsTheOpen(t *testing.T) {
 		cap.OpenMs != open.UnixMilli() || cap.Events != 9 || cap.Resyncs != 0 || !cap.Complete {
 		t.Errorf("capture record %+v", cap)
 	}
-	if end := time.UnixMilli(cap.EndMs); end.Before(open.Add(400*time.Millisecond)) || end.After(open.Add(2*time.Second)) {
+	// EndMs is truncated to the millisecond, so allow one either side.
+	if end := time.UnixMilli(cap.EndMs); end.Before(open.Add(399*time.Millisecond)) || end.After(open.Add(2*time.Second)) {
 		t.Errorf("capture ended %v after the open, want just past the 400ms window", end.Sub(open))
 	}
 

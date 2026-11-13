@@ -301,8 +301,13 @@ func TestBackfillIgnoresACaptureWithAHole(t *testing.T) {
 	if _, err := b.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if r := rowsByMarket(t, b.Dir)["S-D1-T66"]; r.Source != SourceCandles || *r.Bid != 2000 || *r.Ask != 3000 || r.BidSz != nil {
+	if r := rowsByMarket(t, b.Dir)["S-D1-T66"]; r.Source != SourceCandles || *r.Bid != 2000 || *r.Ask != 3000 || r.BidSz != nil || !r.CaptureSeen {
 		t.Errorf("row %+v, want the candle quote", r)
+	}
+	// The capture was consulted, so the settled row is final: it is not
+	// rebuilt on every run in the hope of a better capture.
+	if stats, err := b.Run(context.Background()); err != nil || stats.Built != 0 {
+		t.Errorf("second run: %+v, %v", stats, err)
 	}
 }
 

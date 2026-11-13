@@ -62,6 +62,11 @@ type OpenRow struct {
 	MidAfter     *int   `json:"mid_after,omitempty"`
 	ImpactSource string `json:"impact_source,omitempty"`
 
+	// CaptureSeen is true if the row was built with the market's capture
+	// in hand, whether or not the capture had a usable opening quote. A
+	// row built before the capture existed is rebuilt once.
+	CaptureSeen bool `json:"capture_seen,omitempty"`
+
 	// Result is "yes" or "no" once the market is determined ("scalar"
 	// for scalar markets), "" before; the row is refreshed until then.
 	Result    string `json:"result"`
@@ -86,8 +91,8 @@ const tickersPerCall = 100
 // from the /historical endpoints.
 //
 // Rows whose market has a result are final and are not fetched again,
-// unless a capture has since become available for a row built from
-// candles. So a run is incremental, and can be stopped and rerun.
+// unless a capture has since become available for a row built without
+// one. So a run is incremental, and can be stopped and rerun.
 type Backfill struct {
 	REST   *kalshi.REST
 	Dir    string    // <data-dir>/opens
@@ -185,7 +190,7 @@ func (b *Backfill) run(ctx context.Context, rows map[string]OpenRow, captured ma
 			return false
 		}
 		_, hasCapture := captured[ticker]
-		return r.Source == SourceCapture || !hasCapture
+		return r.CaptureSeen || !hasCapture
 	}
 
 	var cands []candidate
@@ -313,6 +318,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 
 	var events []EventRecord
 	if hasCapture {
+		row.CaptureSeen = true
 		var err error
 		if events, err = b.events(c.series, m); err != nil {
 			return row, err

@@ -158,15 +158,17 @@ func (d *Discovery) poll(ctx context.Context, series bool) {
 
 // PollSeries fetches the series list and records what is new. The first
 // poll of each UTC day fetches the whole list and writes it as that
-// day's snapshot; later polls that day ask only for series updated
-// since the last poll.
+// day's snapshot, as does the first poll after a restart; later polls
+// that day ask only for series updated since the last poll.
 //
 // The very first snapshot is the baseline: with nothing to compare
 // against, none of its series counts as new.
 func (d *Discovery) PollSeries(ctx context.Context) error {
 	start := d.now()
 	day := start.UTC().Format("2006-01-02")
-	full := day != d.snapDay
+	// Also full on the first poll after a restart: there is no last
+	// poll to be incremental from. It rewrites today's snapshot.
+	full := day != d.snapDay || d.lastSeries.IsZero()
 	var since time.Time
 	if !full {
 		since = d.lastSeries.Add(-seriesOverlap)

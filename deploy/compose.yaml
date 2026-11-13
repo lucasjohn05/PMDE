@@ -46,6 +46,35 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  # The open scanner (docs/open-scanner.md): records Kalshi markets'
+  # books through their opens, under opens/ in the same data volume. It
+  # is behind a profile, so a plain `up` doesn't start it:
+  #
+  #   docker compose -f deploy/compose.yaml --profile scan up -d --build
+  #
+  # It uses the image the pmde service builds, and the same Kalshi key.
+  scan:
+    profiles: ["scan"]
+    image: pmde:latest
+    entrypoint: ["/usr/local/bin/pmde-scan", "-config", "/etc/pmde/opens.yaml", "-data-dir", "/data", "-metrics-addr", ":9101"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      KALSHI_KEY_ID: ${KALSHI_KEY_ID:?set KALSHI_KEY_ID in deploy/.env}
+      KALSHI_KEY_PATH: /run/secrets/kalshi_key
+    secrets:
+      - kalshi_key
+    volumes:
+      - data:/data
+      - ../opens.yaml:/etc/pmde/opens.yaml:ro
+    ports:
+      - "127.0.0.1:9101:9101"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
 secrets:
   kalshi_key:
     # Without swarm, a file secret is a read-only bind mount that keeps the

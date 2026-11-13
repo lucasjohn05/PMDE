@@ -237,6 +237,11 @@ func TestSeriesSnapshotAndNewSeries(t *testing.T) {
 	if err := d2.PollSeries(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The first poll after a restart has no last poll to be incremental
+	// from: it is a full fetch.
+	if last := rig.fake.requests[len(rig.fake.requests)-1]; last != "/series?" {
+		t.Errorf("first series poll after a restart was %q, want a full fetch", last)
+	}
 	if n := metricValue(t, reg2, "opens_new_series_total"); n != 1 {
 		t.Errorf("after restart %v new series, want only KXAFTERRESTART", n)
 	}
