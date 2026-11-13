@@ -158,6 +158,48 @@ condition's number and the event count. It goes to the
 `TEST-BAD-MAKER`, to check that the email arrives. The next run drops
 it.
 
+## The weekly summary
+
+`pmde-opens weekly` writes a short markdown report on the week ending
+when it runs, to `opens/weekly/<YYYY-MM-DD>.md` and
+`opens/weekly/latest.md`. It reads only files; no network.
+
+- **Bad-maker candidates** from the latest `badmakers` run, or "None".
+- **Top 10 series by capacity** this week: median daily contracts and
+  dollars at risk (near the money / wings), quoted of captured opens,
+  spread, contracts traded per day in the window, and the opening
+  quotes' traded/pulled shares.
+- **New series** detected this week: title, category, frequency, opens
+  captured, and whether they got a qualifying quote (with it, if so).
+- **Wing calibration so far**, over every settled open on record: per
+  series and for all together, the rungs (and events) with an opening
+  mid under 10c and over 90c, their mean mid, how often they resolved
+  yes, and how many settled against their opening price against what
+  calibrated quotes would give, with the 90% interval from the event
+  simulation. "above" marks a count over the interval.
+- **Scanner health**: captures, markets, incomplete captures and
+  resyncs (from `captures.jsonl`), skipped opens by reason (from
+  `skips.jsonl`, which the scanner writes alongside
+  `opens_skipped_total`), disk free and the data directory's size.
+
+**Delivery.** There is no route from the droplet to an inbox with what
+is installed: no mail transfer agent or client (no `sendmail`,
+`mail`, `msmtp`), and Grafana Cloud emails only alert notifications to
+org members, not documents. So the summary stays on the data volume.
+To read the latest:
+
+```
+ssh root@<droplet> cat /var/lib/docker/volumes/pmde_data/_data/opens/weekly/latest.md
+scp root@<droplet>:/var/lib/docker/volumes/pmde_data/_data/opens/weekly/latest.md .
+```
+
+It runs from root's crontab on Mondays at 12:00 UTC, after the daily
+backfill and before the 15:00Z opens:
+
+```
+0 12 * * 1 cd /opt/pmde && flock -n /run/pmde-weekly.lock docker compose -f deploy/compose.yaml --profile scan run --rm -T --entrypoint /usr/local/bin/pmde-opens scan weekly -config /etc/pmde/opens.yaml -data-dir /data >> /var/log/pmde-weekly.log 2>&1
+```
+
 ## Running it
 
 ```
@@ -178,6 +220,9 @@ KALSHI_KEY_PATH=/path/to/key.pem KALSHI_KEY_ID=<key id> \
 # the bad-maker evaluation over the trailing 30 days (fees.yaml for the
 # net edge); writes data/opens/bad_makers.json
 ./pmde-opens badmakers -config opens.yaml -data-dir data
+
+# the weekly summary, to data/opens/weekly/ (-out - for stdout)
+./pmde-opens weekly -config opens.yaml -data-dir data
 ```
 
 On the droplet the scanner is a second service in `deploy/compose.yaml`,
@@ -331,6 +376,8 @@ because 50 of those events open at the same instant (15:00Z daily).
 | `backfill.jsonl` | backfill | One row per market. Rewritten atomically each run. |
 | `triage.jsonl` | triage | Candle-only rows for the events triage sampled. |
 | `report.csv` | report | The ranked table. |
+| `skips.jsonl` | scan | One line per skipped event (or, for `vanished`, per series and poll): markets and reason. |
+| `weekly/<YYYY-MM-DD>.md`, `weekly/latest.md` | weekly | The weekly summary. |
 | `bad_makers.json` | badmakers | The latest bad-maker evaluation of every series. Rewritten atomically each run. |
 | `bad_maker_flags.jsonl` | badmakers | One line per candidate notification. |
 

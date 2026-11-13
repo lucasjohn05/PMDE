@@ -304,6 +304,7 @@ func (d *Discovery) PollMarkets(ctx context.Context) error {
 		added, vanished := d.Schedule.Update(series, markets)
 		if vanished > 0 {
 			d.Metrics.Skipped(metrics.SkipVanished, vanished)
+			recordSkip(d.Dir, d.now(), series, "", vanished, metrics.SkipVanished, d.Logf)
 			d.logf("opens: %s: %d scheduled market(s) left the unopened list before their open_time", series, vanished)
 		}
 		if added > 0 {

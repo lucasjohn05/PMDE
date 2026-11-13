@@ -265,6 +265,31 @@ func (e constError) Error() string { return string(e) }
 
 const errUnsafeSeries = constError("not recording: the series ticker is not a safe directory name")
 
+// SkipRecord is one line of skips.jsonl: market opens scheduled but not
+// captured, as opens_skipped_total counts them, kept so a summary can
+// count them over a period across restarts.
+type SkipRecord struct {
+	T       int64  `json:"t"` // Unix ms
+	Series  string `json:"series"`
+	Event   string `json:"event,omitempty"` // "" for vanished markets, counted per series
+	Markets int    `json:"markets"`
+	Reason  string `json:"reason"` // a metrics.Skip constant
+}
+
+const skipsFile = "skips.jsonl"
+
+// recordSkip appends a SkipRecord; an error is logged, not returned:
+// the record is for summaries, and the counter has the skip already.
+func recordSkip(dir string, now time.Time, series, event string, markets int, reason string, logf func(string, ...any)) {
+	if dir == "" || markets <= 0 {
+		return
+	}
+	rec := SkipRecord{T: now.UnixMilli(), Series: series, Event: event, Markets: markets, Reason: reason}
+	if err := storage.AppendLine(filepath.Join(dir, skipsFile), rec); err != nil && logf != nil {
+		logf("opens: %v", err)
+	}
+}
+
 // captureTick is how often the Capturer checks the Schedule. It bounds
 // how much of Lead can be lost before a capture starts connecting.
 const captureTick = 250 * time.Millisecond
@@ -338,6 +363,7 @@ func (c *Capturer) Run(ctx context.Context) {
 		due, late := c.Schedule.Due(c.now(), c.Cfg.Lead, c.Cfg.Window)
 		for _, e := range late {
 			c.Metrics.Skipped(metrics.SkipLate, len(e.Rungs))
+			recordSkip(c.Dir, c.now(), e.Series, e.Event, len(e.Rungs), metrics.SkipLate, c.Logf)
 			c.logf("opens: skipped %s (%d rung(s)): already past its open_time", e.Event, len(e.Rungs))
 		}
 		for _, e := range due {
@@ -349,6 +375,7 @@ func (c *Capturer) Run(ctx context.Context) {
 				})
 			default:
 				c.Metrics.Skipped(metrics.SkipConcurrency, len(e.Rungs))
+				recordSkip(c.Dir, c.now(), e.Series, e.Event, len(e.Rungs), metrics.SkipConcurrency, c.Logf)
 				c.logf("opens: skipped %s (%d rung(s)): %d captures already running (max_concurrent)",
 					e.Event, len(e.Rungs), c.Cfg.MaxConcurrent)
 			}

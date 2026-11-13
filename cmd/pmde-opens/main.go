@@ -58,13 +58,15 @@ func main() {
 		series(os.Args[2:])
 	case "badmakers":
 		badmakers(os.Args[2:])
+	case "weekly":
+		weekly(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n       pmde-opens badmakers [flags]\n       pmde-opens triage [flags]\n       pmde-opens series [flags]\n(-h after any of them for its flags)")
+	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n       pmde-opens badmakers [flags]\n       pmde-opens weekly [flags]\n       pmde-opens triage [flags]\n       pmde-opens series [flags]\n(-h after any of them for its flags)")
 	os.Exit(2)
 }
 
@@ -210,6 +212,48 @@ func badmakers(args []string) {
 	log.Printf("wrote %s: %d series evaluated over %d days, %d candidate(s)", filepath.Join(dir, "bad_makers.json"), len(b.Series), cfg.BadMaker.WindowDays, len(cands))
 	for _, e := range cands {
 		log.Printf("CANDIDATE %s (%s): notified %s", e.Series, e.Title, time.UnixMilli(e.NotifiedMs).UTC().Format(time.RFC3339))
+	}
+}
+
+func weekly(args []string) {
+	fs := flag.NewFlagSet("weekly", flag.ExitOnError)
+	configPath := fs.String("config", "opens.yaml", "open scanner config (YAML), for the quote rule")
+	dataDir := fs.String("data-dir", "data", "data directory; the summary goes to its opens/weekly/<YYYY-MM-DD>.md and opens/weekly/latest.md")
+	out := fs.String("out", "", "write the summary here instead (\"-\" for stdout)")
+	seed := fs.Uint64("seed", 1, "seed for the simulations")
+	resamples := fs.Int("resamples", opens.DefaultResamples, "simulations per series")
+	fs.Parse(args)
+
+	cfg := loadConfig(*configPath)
+	dir := filepath.Join(*dataDir, "opens")
+	now := time.Now()
+	w, err := opens.LoadWeekly(*dataDir, dir, now, opens.Options{Seed: *seed, Resamples: *resamples, Rule: cfg.Quote, WingInterval: cfg.BadMaker.WingInterval})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *out == "-" {
+		if err := opens.WriteWeekly(os.Stdout, w); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	paths := []string{*out}
+	if *out == "" {
+		dated := opens.WeeklyPath(dir, now)
+		paths = []string{dated, filepath.Join(filepath.Dir(dated), "latest.md")}
+	}
+	var buf strings.Builder
+	if err := opens.WriteWeekly(&buf, w); err != nil {
+		log.Fatal(err)
+	}
+	for _, p := range paths {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			log.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(buf.String()), 0o644); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("wrote %s", p)
 	}
 }
 

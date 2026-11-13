@@ -375,6 +375,15 @@ func TestCaptureSkipsWholeEvents(t *testing.T) {
 	if fmt.Sprint(byEvent) != "map[S-E1:3 S-E2:3]" {
 		t.Errorf("captured rungs by event %v, want E1 and E2 whole and nothing of E3", byEvent)
 	}
+	// The skips are on file too, for the weekly summary.
+	skips, err := storage.ReadJSONL[SkipRecord](filepath.Join(rig.dir, skipsFile))
+	got := map[string]int{}
+	for _, s := range skips {
+		got[s.Event+" "+s.Reason] += s.Markets
+	}
+	if err != nil || fmt.Sprint(got) != "map[S-E3 concurrency:3 S-OLD late:2]" {
+		t.Errorf("skips.jsonl %v, %v", got, err)
+	}
 }
 
 // A gap in the shared seq loses every rung at once: each record shows
