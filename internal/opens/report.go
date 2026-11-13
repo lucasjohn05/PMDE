@@ -58,14 +58,19 @@ type SeriesReport struct {
 	ImpactBpsPerContract float64
 
 	// Calibration of the opening mid against the result, over the opens
-	// with both (yes/no results only).
-	Settled int
-	Deciles [10]Decile
-	Brier   float64
+	// with both (yes/no results only): Settled, CalEvents, Deciles,
+	// Brier, MiscalBps with its interval, NullBps and ExcessBps.
+	Calibration
 
-	// MiscalBps is the expected calibration error: the decile-weighted
-	// mean of |mean opening mid - realized frequency|, in bps.
-	MiscalBps float64
+	// CandleCal is how many of the Settled opens have their opening
+	// quote from a candlestick. A candle close is up to a minute after
+	// the first quote, by which time a wrong quote may already have
+	// been traded back toward fair, so calibration measured on it
+	// understates how far off the first quote was. MiscalLowerBound is
+	// true if any are: the miscalibration figures are then lower
+	// bounds.
+	CandleCal        int
+	MiscalLowerBound bool
 
 	// Score = miscalibration (as a fraction of $1) x modal opening size
 	// (contracts, the mean of the two sides' modes) x opens per day:
@@ -88,18 +93,39 @@ type Decile struct {
 // fit: with two parameters, two rungs always fit exactly.
 const fitMinRungs = 3
 
+// Options are the knobs of a report.
+type Options struct {
+	// MinOpens leaves out series with fewer rows than this.
+	MinOpens int
+
+	// Seed seeds the bootstrap and the null simulation. The same rows
+	// and the same seed give the same report.
+	Seed uint64
+
+	// Resamples is how many bootstrap resamples and null simulations
+	// are run per series. Zero means DefaultResamples.
+	Resamples int
+}
+
+// DefaultResamples is enough for a 90% interval that is stable to a few
+// percent.
+const DefaultResamples = 2000
+
 // Report computes one SeriesReport per series in rows, ranked: by Score
-// where there is one, then by miscalibration x opens per day, then by
-// name. Series with fewer than minOpens rows are left out.
-func Report(rows []OpenRow, minOpens int) []SeriesReport {
+// where there is one, then by excess miscalibration x opens per day,
+// then by name.
+func Report(rows []OpenRow, opts Options) []SeriesReport {
+	if opts.Resamples <= 0 {
+		opts.Resamples = DefaultResamples
+	}
 	bySeries := map[string][]OpenRow{}
 	for _, r := range rows {
 		bySeries[r.Series] = append(bySeries[r.Series], r)
 	}
 	var out []SeriesReport
 	for series, rs := range bySeries {
-		if len(rs) >= max(minOpens, 1) {
-			out = append(out, seriesReport(series, rs))
+		if len(rs) >= max(opts.MinOpens, 1) {
+			out = append(out, seriesReport(series, rs, opts))
 		}
 	}
 	slices.SortFunc(out, func(a, b SeriesReport) int {
@@ -111,6 +137,7 @@ func Report(rows []OpenRow, minOpens int) []SeriesReport {
 		}
 		return cmp.Or(
 			cmp.Compare(b.Score, a.Score),
+			cmp.Compare(b.ExcessBps*b.OpensPerDay, a.ExcessBps*a.OpensPerDay),
 			cmp.Compare(b.MiscalBps*b.OpensPerDay, a.MiscalBps*a.OpensPerDay),
 			cmp.Compare(a.Series, b.Series),
 		)
@@ -118,7 +145,7 @@ func Report(rows []OpenRow, minOpens int) []SeriesReport {
 	return out
 }
 
-func seriesReport(series string, rows []OpenRow) SeriesReport {
+func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	rep := SeriesReport{Series: series, Opens: len(rows)}
 
 	first, last := rows[0].OpenMs, rows[0].OpenMs
@@ -131,9 +158,6 @@ func seriesReport(series string, rows []OpenRow) SeriesReport {
 	var exactDelays, candleDelays, spreads, impacts []float64
 	var bidSizes, askSizes []int64
 	events := map[string][]OpenRow{}
-	var probSum [10]float64
-	var yes [10]int
-	var brier float64
 	for _, r := range rows {
 		if r.Mid != nil {
 			rep.Quoted++
@@ -146,19 +170,8 @@ func seriesReport(series string, rows []OpenRow) SeriesReport {
 				candleDelays = append(candleDelays, delay)
 			}
 			events[r.Event] = append(events[r.Event], r)
-			if r.Result == "yes" || r.Result == "no" {
-				p, y := float64(*r.Mid)/10000, 0.0
-				if r.Result == "yes" {
-					y = 1
-				}
-				d := min(*r.Mid*10/10000, 9)
-				rep.Deciles[d].N++
-				probSum[d] += p
-				if y == 1 {
-					yes[d]++
-				}
-				brier += (p - y) * (p - y)
-				rep.Settled++
+			if (r.Result == "yes" || r.Result == "no") && r.Source != SourceCapture {
+				rep.CandleCal++
 			}
 		}
 		if r.BidSz != nil && r.AskSz != nil {
@@ -192,18 +205,8 @@ func seriesReport(series string, rows []OpenRow) SeriesReport {
 	}
 	rep.FitEvents, rep.FitRMSEBps = len(rmses), median(rmses)
 
-	if rep.Settled > 0 {
-		rep.Brier = brier / float64(rep.Settled)
-		ece := 0.0
-		for d := range rep.Deciles {
-			if n := rep.Deciles[d].N; n > 0 {
-				rep.Deciles[d].MeanBps = probSum[d] / float64(n) * 10000
-				rep.Deciles[d].Freq = float64(yes[d]) / float64(n)
-				ece += float64(n) / float64(rep.Settled) * math.Abs(probSum[d]/float64(n)-rep.Deciles[d].Freq)
-			}
-		}
-		rep.MiscalBps = ece * 10000
-	}
+	rep.Calibration = calibrate(series, rows, opts.Seed, opts.Resamples)
+	rep.MiscalLowerBound = rep.CandleCal > 0
 	if rep.Settled > 0 && rep.Sized > 0 {
 		modal := float64(rep.BidSizeMode+rep.AskSizeMode) / 2 / 100 // contracts
 		rep.Score = rep.MiscalBps / 10000 * modal * rep.OpensPerDay

@@ -44,7 +44,7 @@ func TestReportBasics(t *testing.T) {
 	// Series B: one unquoted open.
 	rows = append(rows, OpenRow{Market: "B-0", Series: "B", Event: "B-E", OpenMs: repOpen, Result: "no"})
 
-	reps := Report(rows, 1)
+	reps := Report(rows, Options{MinOpens: 1, Seed: 1, Resamples: 300})
 	if len(reps) != 2 {
 		t.Fatalf("%d reports", len(reps))
 	}
@@ -77,7 +77,7 @@ func TestReportBasics(t *testing.T) {
 	if b.Opens != 1 || b.Quoted != 0 || b.Settled != 0 || b.HasScore {
 		t.Errorf("unquoted series: %+v", b)
 	}
-	if got := Report(rows, 2); len(got) != 1 || got[0].Series != "A" {
+	if got := Report(rows, Options{MinOpens: 2, Seed: 1, Resamples: 300}); len(got) != 1 || got[0].Series != "A" {
 		t.Errorf("minOpens 2 kept %d series", len(got))
 	}
 }
@@ -104,7 +104,7 @@ func TestCalibrationBrierAndScore(t *testing.T) {
 	// A scalar result and an unsettled open don't count.
 	rows = append(rows, quoted("OFF", "OFF-X", "OFF-X", repOpen, 5000, 100, "scalar"), quoted("OFF", "OFF-Y", "OFF-Y", repOpen, 5000, 100, ""))
 
-	reps := Report(rows, 1)
+	reps := Report(rows, Options{MinOpens: 1, Seed: 1, Resamples: 300})
 	if len(reps) != 2 || reps[0].Series != "OFF" || reps[1].Series != "CAL" {
 		t.Fatalf("ranking: %v then %v, want OFF first", reps[0].Series, reps[1].Series)
 	}
@@ -198,7 +198,7 @@ func TestNormalFitRMSE(t *testing.T) {
 	}
 
 	// Report takes the median over a series' events.
-	reps := Report(append(clean, noisy...), 1)
+	reps := Report(append(clean, noisy...), Options{MinOpens: 1, Seed: 1, Resamples: 300})
 	if len(reps) != 1 || reps[0].FitEvents != 2 || reps[0].FitRMSEBps < 100 {
 		t.Errorf("series fit: %d events, RMSE %v", reps[0].FitEvents, reps[0].FitRMSEBps)
 	}
@@ -213,14 +213,14 @@ func TestWriteTextAndCSV(t *testing.T) {
 		}
 	}
 	rows = append(rows, OpenRow{Market: "Q-0", Series: "Q", Event: "Q-E", OpenMs: repOpen})
-	reps := Report(rows, 1)
+	reps := Report(rows, Options{MinOpens: 1, Seed: 1, Resamples: 300})
 
 	var text bytes.Buffer
 	if err := WriteText(&text, reps, true); err != nil {
 		t.Fatal(err)
 	}
 	out := text.String()
-	for _, want := range []string{"rank", "series", "score", "N", "Q", "opening mid vs realized frequency (14 settled opens)", "≤60000ms"} {
+	for _, want := range []string{"rank", "series", "score", "N", "Q", "opening mid vs realized frequency (14 settled opens in 1 events", "≤60000ms"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text output lacks %q:\n%s", want, out)
 		}
@@ -234,8 +234,8 @@ func TestWriteTextAndCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 3 || len(recs[0]) != 23+30 {
-		t.Fatalf("%d CSV rows of %d columns, want 3 of 53", len(recs), len(recs[0]))
+	if len(recs) != 3 || len(recs[0]) != 30+30 {
+		t.Fatalf("%d CSV rows of %d columns, want 3 of 60", len(recs), len(recs[0]))
 	}
 	col := map[string]int{}
 	for i, h := range recs[0] {

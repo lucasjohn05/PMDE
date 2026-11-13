@@ -97,6 +97,8 @@ func report(args []string) {
 	csvPath := fs.String("csv", "", "where to write the table as CSV (default: <data-dir>/opens/report.csv; \"-\" for none)")
 	minOpens := fs.Int("min-opens", 1, "leave out series with fewer opens than this")
 	deciles := fs.Bool("deciles", false, "also print each series' calibration table by opening-mid decile")
+	seed := fs.Uint64("seed", 1, "seed for the bootstrap and the null simulation; the same rows and seed give the same report")
+	resamples := fs.Int("resamples", opens.DefaultResamples, "bootstrap resamples and null simulations per series")
 	fs.Parse(args)
 
 	dir := filepath.Join(*dataDir, "opens")
@@ -107,7 +109,7 @@ func report(args []string) {
 	if len(rows) == 0 {
 		log.Fatalf("no rows in %s; run pmde-opens backfill first", filepath.Join(dir, "backfill.jsonl"))
 	}
-	reps := opens.Report(rows, *minOpens)
+	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples})
 	if err := opens.WriteText(os.Stdout, reps, *deciles); err != nil {
 		log.Fatal(err)
 	}

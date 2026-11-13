@@ -199,13 +199,55 @@ short-lived markets, and per-market series would grow without bound.
   came off a normal model.
 - **impact**: median mid change after the first trade, in the taker's
   direction, in bps per contract traded.
-- **brier, miscal**: opening mid against the yes/no result. `miscal` is
-  the decile-weighted mean of |mean mid − realized frequency|, in bps.
-  `-deciles` prints the table behind it.
+- **settled, events**: opens with a yes/no result and an opening quote,
+  and the events they belong to. One outcome decides every rung of an
+  event, so the event count is the sample size, not the row count.
+- **brier**: opening mid against the yes/no result.
+- **miscal [90%]**: the decile-weighted mean of |mean mid − realized
+  frequency|, in bps, with a 90% interval. `-deciles` prints the table
+  behind it.
+- **null, excess**: see the next section.
 - **score** = miscal (as a fraction of $1) × modal opening size
   (contracts, mean of the two sides) × opens per day. Roughly dollars a
   day. It is blank until a series has both settled opens and captured
-  sizes; such series rank below scored ones, by miscal × opens/day.
+  sizes; such series rank below scored ones, by excess × opens/day.
+
+### The noise floor under miscal
+
+`miscal` is a mean of absolute gaps, so it is positive even when the
+quotes are exactly right, and larger the fewer events there are: twelve
+perfectly calibrated events show a miscal of well over 1000 bps. Three
+numbers put it in context. All of them treat the event as the unit.
+
+- **null**: the miscal to expect if the opening mids were perfectly
+  calibrated. The mids are kept and the outcomes are simulated from
+  them, one uniform draw per event deciding all its rungs: "greater"
+  rungs resolve as a nested set (if "above 60" is yes, so is "above
+  55"), "less" rungs nested the other way, and buckets one at a time.
+  Each rung still resolves yes with exactly the probability its mid
+  states. Rungs with no usable strike are treated as mutually exclusive
+  alternatives.
+- **excess** = miscal − null, floored at zero: the part the noise floor
+  does not explain. This is the number to rank on.
+- **the 90% interval** comes from resampling whole events with
+  replacement. It is the basic bootstrap interval, `[2m − q95, 2m − q05]`
+  floored at zero, not the percentile interval: resampling adds noise,
+  which adds to a mean of absolute values, so the resamples sit above
+  the estimate by about as much as the estimate sits above the truth.
+  Reflecting takes that bias out, and it is why the interval can lie
+  below the point estimate. With a handful of events it is unreliable;
+  read the null and the event count there.
+
+Both use a seeded generator (`-seed`, default 1; `-resamples`, default
+2000), keyed on the series name as well, so the same rows give the same
+report and one series' numbers do not depend on which others are in it.
+
+**Candle-sourced calibration is a lower bound.** An opening quote read
+from a candle close is up to a minute after the first quote, and a
+wrong quote may already have been traded back toward fair by then. Where
+any of a series' settled opens are candle-sourced, its miscal and excess
+are printed with `≥`, the decile table says how many, and the CSV has
+`cal_from_candles` and `miscal_is_lower_bound`.
 
 ## What the Kalshi API allowed, and the fallbacks
 
