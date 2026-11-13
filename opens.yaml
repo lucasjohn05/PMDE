@@ -58,6 +58,59 @@ series:
   - KXLOWTTTN
   # gas, earthquakes, oil, FX, Truth Social posts
   - KXAAAGASD
+  # The 50 state gas ladders (KXAAAGASD + state), added 2026-11-13 for the
+  # gas paper trader, which needs their opening books with sizes. All 51
+  # gas events open together at 13:00Z.
+  - KXAAAGASDAK
+  - KXAAAGASDAL
+  - KXAAAGASDAR
+  - KXAAAGASDAZ
+  - KXAAAGASDCA
+  - KXAAAGASDCO
+  - KXAAAGASDCT
+  - KXAAAGASDDE
+  - KXAAAGASDFL
+  - KXAAAGASDGA
+  - KXAAAGASDHI
+  - KXAAAGASDIA
+  - KXAAAGASDID
+  - KXAAAGASDIL
+  - KXAAAGASDIN
+  - KXAAAGASDKS
+  - KXAAAGASDKY
+  - KXAAAGASDLA
+  - KXAAAGASDMA
+  - KXAAAGASDMD
+  - KXAAAGASDME
+  - KXAAAGASDMI
+  - KXAAAGASDMN
+  - KXAAAGASDMO
+  - KXAAAGASDMS
+  - KXAAAGASDMT
+  - KXAAAGASDNC
+  - KXAAAGASDND
+  - KXAAAGASDNE
+  - KXAAAGASDNH
+  - KXAAAGASDNJ
+  - KXAAAGASDNM
+  - KXAAAGASDNV
+  - KXAAAGASDNY
+  - KXAAAGASDOH
+  - KXAAAGASDOK
+  - KXAAAGASDOR
+  - KXAAAGASDPA
+  - KXAAAGASDRI
+  - KXAAAGASDSC
+  - KXAAAGASDSD
+  - KXAAAGASDTN
+  - KXAAAGASDTX
+  - KXAAAGASDUT
+  - KXAAAGASDVA
+  - KXAAAGASDVT
+  - KXAAAGASDWA
+  - KXAAAGASDWI
+  - KXAAAGASDWV
+  - KXAAAGASDWY
   - KXBIGGESTQUAKE
   - KXBRENTD
   - KXEURUSD
@@ -65,21 +118,12 @@ series:
   - KXUSDJPY
   - KXWTI
 
-# Backfilled and reported on, but not captured: the 17 series that passed
-# the 2026-11-13 triage at 50% only on 1c/99c stub books (median opening
+# Backfilled and reported on, but not captured: series that passed the
+# 2026-11-13 triage at 50% only on 1c/99c stub books (median opening
 # spread 9400-9800 bps). Their results, opening prices and trades are
 # fetched, so the report's flow columns show whether anyone takes there.
+# There were 17; the ten state gas ladders among them moved to `series`.
 backfill_only:
-  - KXAAAGASDAZ
-  - KXAAAGASDCA
-  - KXAAAGASDCO
-  - KXAAAGASDCT
-  - KXAAAGASDFL
-  - KXAAAGASDGA
-  - KXAAAGASDIL
-  - KXAAAGASDIN
-  - KXAAAGASDMA
-  - KXAAAGASDMI
   - KXCS2MAP
   - KXSOFRD
   - KXTRUMPACTD
@@ -110,6 +154,11 @@ window: 60s
 # together at 15:00Z daily, so 100 leaves room for new series opening
 # then too. With pmde's 4 connections that is 104 of the 200 Kalshi
 # allows on the lower tiers.
+#
+# The 51 gas events open together at 13:00Z. Checked 2026-11-13: with
+# the 25 new-series KXAAAGASCD?? events that open at the same instant
+# that is 76 captures, 80 connections with pmde's 4. It fits; the cap
+# was not raised.
 max_concurrent: 100
 
 # How often to poll the watched series' unopened markets, and the

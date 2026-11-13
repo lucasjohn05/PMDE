@@ -355,13 +355,18 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | `quote.min_size` | 10 | Fewest contracts at a price, each side, that make a quote. |
 | `bad_maker.*` | see "The bad-maker alert" | `window_days` 30, `min_quoted_share` 0.7, `min_median_capacity` 200, `min_modal_share` 0.7, `min_events` 30, `wing_interval` 0.9, `notify_every_days` 7 (at least 2). |
 
-Unknown keys are errors. The checked-in allowlist (55 series: 48 daily
-temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD, KXWTI,
-KXEURUSD, KXUSDJPY and KXTRUTHSOCIALD) was chosen from a triage of all
-481 hourly and daily series on 2026-11-13. `backfill_only` holds the 17
-series that passed that triage only on 1c/99c stub books, for the flow
-columns. `max_concurrent` is 100
-because 50 of those events open at the same instant (15:00Z daily).
+Unknown keys are errors. The checked-in allowlist is 105 series. 55 (48
+daily temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD,
+KXWTI, KXEURUSD, KXUSDJPY and KXTRUTHSOCIALD) were chosen from a triage
+of all 481 hourly and daily series on 2026-11-13. The 50 state gas
+ladders (KXAAAGASD + state) were added the same day for the gas paper
+trader, which needs their opening books with sizes; ten of them had
+been in `backfill_only`. `backfill_only` holds the other 7 series that
+passed the triage only on 1c/99c stub books, for the flow columns.
+`max_concurrent` is 100 because 50 of those events open at the same
+instant (15:00Z daily). The 51 gas events open together at 13:00Z;
+with the new-series events opening then (25 on 2026-11-13) that is 76
+captures, under the cap.
 
 ## Files, under `<data-dir>/opens`
 
