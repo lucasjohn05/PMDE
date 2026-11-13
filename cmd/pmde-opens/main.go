@@ -96,8 +96,10 @@ func backfill(args []string) {
 		Series:  cfg.Series,
 		Since:   since,
 		Horizon: *horizon,
+		Rule:    cfg.Quote,
 		Logf:    log.Printf,
 	}
+	log.Printf("quote rule: %v", cfg.Quote)
 	stats, err := b.Run(ctx)
 	log.Printf("%d row(s) in %s: %d fetched this run (%d from captures, %d from candlesticks, %d with no two-sided quote), %d failed",
 		stats.Rows, filepath.Join(b.Dir, "backfill.jsonl"), stats.Built, stats.Captured, stats.Candles, stats.NoQuote, stats.Failed)
@@ -108,6 +110,7 @@ func backfill(args []string) {
 
 func report(args []string) {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	configPath := fs.String("config", "opens.yaml", "open scanner config (YAML), for its quote rule; \"\" for the defaults")
 	dataDir := fs.String("data-dir", "data", "data directory; rows are read from its opens/backfill.jsonl")
 	csvPath := fs.String("csv", "", "where to write the table as CSV (default: <data-dir>/opens/report.csv; \"-\" for none)")
 	minOpens := fs.Int("min-opens", 1, "leave out series with fewer opens than this")
@@ -117,6 +120,7 @@ func report(args []string) {
 	feesPath := fs.String("fees", "fees.yaml", "fee rates (YAML), for the net edge; \"\" reports without net figures")
 	fs.Parse(args)
 
+	cfg := loadConfig(*configPath)
 	dir := filepath.Join(*dataDir, "opens")
 	rows, err := opens.LoadRows(dir)
 	if err != nil {
@@ -129,7 +133,11 @@ func report(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees})
+	log.Printf("quote rule: %v", cfg.Quote)
+	if n := opens.BuiltUnderOtherRule(rows, cfg.Quote); n > 0 {
+		log.Printf("%d of %d rows were built under a different quote rule; their quotes are held to this one, but rerun the backfill to rebuild them", n, len(rows))
+	}
+	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote})
 	noteFees(fees, reps)
 	if err := opens.WriteText(os.Stdout, reps, *deciles); err != nil {
 		log.Fatal(err)
@@ -152,6 +160,19 @@ func report(args []string) {
 		log.Fatal(err)
 	}
 	log.Printf("wrote %s", *csvPath)
+}
+
+// loadConfig reads the scanner config at path, or returns the defaults
+// if path is "".
+func loadConfig(path string) opens.Config {
+	if path == "" {
+		return opens.DefaultConfig()
+	}
+	cfg, err := opens.LoadConfig(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return cfg
 }
 
 // noteFees says where the fee inputs came from, and which series have
@@ -178,6 +199,7 @@ func noteFees(fees *opens.Fees, reps []opens.SeriesReport) {
 
 func triage(args []string) {
 	fs := flag.NewFlagSet("triage", flag.ExitOnError)
+	configPath := fs.String("config", "", "open scanner config (YAML), for its quote rule; \"\" for the defaults")
 	seriesFlag := fs.String("series", "", "series tickers to triage, comma-separated")
 	seriesFile := fs.String("series-file", "", "file of series tickers, one per line (what `pmde-opens series` prints); \"-\" for stdin")
 	dataDir := fs.String("data-dir", "data", "data directory; fetched rows are kept in its opens/triage.jsonl, so a rerun fetches only what is new")
@@ -229,6 +251,8 @@ func triage(args []string) {
 	if *minShare > 1 {
 		log.Fatal("-min-quoted-share is a share between 0 and 1")
 	}
+	cfg := loadConfig(*configPath)
+	log.Printf("quote rule: %v (candles have no sizes: the spread cap only)", cfg.Quote)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -239,6 +263,7 @@ func triage(args []string) {
 		Since:        since,
 		Horizon:      *horizon,
 		SampleEvents: *sample,
+		Rule:         cfg.Quote,
 		Logf:         log.Printf,
 	}
 	rows, runErr := t.Run(ctx)
@@ -263,7 +288,7 @@ func triage(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := opens.WriteAllowlist(f, passing, note); err != nil {
+	if err := opens.WriteAllowlist(f, passing, note, cfg.Quote); err != nil {
 		f.Close()
 		log.Fatal(err)
 	}

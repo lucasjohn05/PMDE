@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 
@@ -51,6 +52,9 @@ type Config struct {
 	// MarketPoll and SeriesPoll are how often the unopened markets of
 	// the watched series, and the series list, are polled.
 	MarketPoll, SeriesPoll time.Duration
+
+	// Quote is what counts as a two-sided quote, in every command.
+	Quote QuoteRule
 }
 
 // DefaultConfig is what an empty config file means, except that Series
@@ -65,6 +69,7 @@ func DefaultConfig() Config {
 		MaxConcurrent:    50,
 		MarketPoll:       time.Minute,
 		SeriesPoll:       15 * time.Minute,
+		Quote:            DefaultQuoteRule(),
 	}
 }
 
@@ -80,6 +85,10 @@ type configFile struct {
 	MaxConcurrent    *int     `yaml:"max_concurrent"`
 	MarketPoll       string   `yaml:"market_poll"`
 	SeriesPoll       string   `yaml:"series_poll"`
+	Quote            *struct {
+		MaxSpreadBps *int     `yaml:"max_spread_bps"`
+		MinSize      *float64 `yaml:"min_size"` // contracts
+	} `yaml:"quote"`
 }
 
 // LoadConfig reads and validates a scanner config file.
@@ -106,6 +115,9 @@ func LoadConfig(path string) (Config, error) {
 //	max_concurrent: 50
 //	market_poll: 1m
 //	series_poll: 15m
+//	quote:
+//	  max_spread_bps: 1000
+//	  min_size: 10
 //
 // Everything but series has a default (DefaultConfig). Unknown keys are
 // errors, as in the pair config.
@@ -172,6 +184,22 @@ func ParseConfig(data []byte) (Config, error) {
 			return Config{}, fmt.Errorf("%s must be at least %v", d.name, d.min)
 		}
 		*d.dst = v
+	}
+	if q := f.Quote; q != nil {
+		if q.MaxSpreadBps != nil {
+			if *q.MaxSpreadBps < 1 || *q.MaxSpreadBps > 9999 {
+				return Config{}, errors.New("quote.max_spread_bps must be between 1 and 9999")
+			}
+			c.Quote.MaxSpreadBps = *q.MaxSpreadBps
+		}
+		if q.MinSize != nil {
+			// At least one contract: a fraction of a contract is
+			// never a quote.
+			if *q.MinSize < 1 || *q.MinSize > 1e9 {
+				return Config{}, errors.New("quote.min_size must be at least 1 contract")
+			}
+			c.Quote.MinSizeCenti = int64(math.Round(*q.MinSize * 100))
+		}
 	}
 	if len(c.Series) == 0 && !c.IncludeNewSeries {
 		return Config{}, errors.New("nothing to scan: no series listed and include_new_series is false")

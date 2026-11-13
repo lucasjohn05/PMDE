@@ -56,6 +56,10 @@ type Triage struct {
 	// fetched. Zero means 20; negative means every event.
 	SampleEvents int
 
+	// Rule is what counts as a two-sided quote. Candles have no sizes,
+	// so only its spread cap applies. Zero means DefaultQuoteRule.
+	Rule QuoteRule
+
 	Logf func(format string, args ...any)
 }
 
@@ -119,6 +123,9 @@ func (t *Triage) Run(ctx context.Context) ([]TriageRow, error) {
 	sample := t.SampleEvents
 	if sample == 0 {
 		sample = 20
+	}
+	if t.Rule == (QuoteRule{}) {
+		t.Rule = DefaultQuoteRule()
 	}
 
 	path := filepath.Join(t.Dir, triageFile)
@@ -230,7 +237,7 @@ func (t *Triage) series(ctx context.Context, series string, since time.Time, hor
 	for _, e := range events {
 		byOpen := map[int64][]kalshi.Market{}
 		for _, m := range e.markets {
-			if r, ok := have[m.Ticker]; ok {
+			if r, ok := have[m.Ticker]; ok && r.builtUnder(t.Rule) {
 				rows = append(rows, r)
 				continue
 			}
@@ -249,7 +256,7 @@ func (t *Triage) series(ctx context.Context, series string, since time.Time, hor
 					return row, fetched
 				}
 				for _, m := range chunk {
-					r := candleRow(series, m, candles[m.Ticker])
+					r := candleRow(series, m, candles[m.Ticker], t.Rule)
 					have[m.Ticker] = r
 					rows = append(rows, r)
 					fetched++
@@ -296,13 +303,15 @@ func boolInt(b bool) int {
 }
 
 // candleRow builds a market's row from its candles alone: the opening
-// quote is the close of the first candle that closes two-sided. It is
-// the candle path of Backfill.row, without the trades.
-func candleRow(series string, m kalshi.Market, candles []kalshi.Candle) OpenRow {
+// quote is the close of the first candle that closes two-sided within
+// rule's spread cap. It is the candle path of Backfill.row, without the
+// trades.
+func candleRow(series string, m kalshi.Market, candles []kalshi.Candle, rule QuoteRule) OpenRow {
 	row := OpenRow{
 		Market: m.Ticker, Series: series, Event: m.Event,
 		Rung: m.Rung, StrikeType: m.StrikeType, Floor: m.FloorStrike, Cap: m.CapStrike,
 		OpenMs: m.Open.UnixMilli(), Result: m.Result,
+		RuleSpread: rule.MaxSpreadBps, RuleSize: rule.MinSizeCenti,
 	}
 	if m.HasSettlement && m.Result != "" {
 		row.SettleBps = &m.SettlementBps
@@ -311,7 +320,7 @@ func candleRow(series string, m kalshi.Market, candles []kalshi.Candle) OpenRow 
 		row.SettledMs = m.Settled.UnixMilli()
 	}
 	for _, c := range candles {
-		if c.TwoSided() {
+		if c.TwoSided() && rule.MeetsSpread(c.BidClose, c.AskClose) {
 			row.Source, row.QuoteMs = SourceCandles, c.End*1000
 			row.Bid, row.Ask, row.Mid = &c.BidClose, &c.AskClose, ptr(mid(c.BidClose, c.AskClose))
 			break
@@ -359,9 +368,10 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 opens, events: markets settled in the period and the events they belong to ("+": the listing hit the
 page limit); /day: per UTC day over the span seen. sampled: markets whose candles were read (whole
 events, evenly spaced). quoted 1m: share of sampled opens with a two-sided quote at the close of the
-1-minute candle ending within 60s of open_time; quoted: within the whole horizon. spread: median
-opening spread, bps. fit rmse: median RMSE, bps, of a normal-CDF fit to an event's opening mids across
-its rungs (events fitted). All from 1-minute candle closes: to the minute, and no sizes.
+1-minute candle ending within 60s of open_time; quoted: within the whole horizon. A quote counts only
+within the quote rule's spread cap; candles have no sizes, so the rule's minimum size is not checked.
+spread: median opening spread, bps. fit rmse: median RMSE, bps, of a normal-CDF fit to an event's
+opening mids across its rungs (events fitted). All from 1-minute candle closes: to the minute.
 `)
 	for _, r := range failed {
 		fmt.Fprintf(w, "%s: %s\n", r.Series, r.Err)
@@ -382,10 +392,12 @@ func Passing(rows []TriageRow, minShare float64) []string {
 }
 
 // WriteAllowlist writes a complete scanner config (an opens.yaml) with
-// series as its allowlist and every other setting at its default,
-// spelled out. note is put in the header comment.
-func WriteAllowlist(w io.Writer, series []string, note string) error {
+// series as its allowlist, rule as its quote rule, and every other
+// setting at its default, spelled out. note is put in the header
+// comment.
+func WriteAllowlist(w io.Writer, series []string, note string, rule QuoteRule) error {
 	d := DefaultConfig()
+	d.Quote = rule
 	var b strings.Builder
 	b.WriteString("# Open scanner config, written by pmde-opens triage.\n")
 	for _, line := range strings.Split(strings.TrimSpace(note), "\n") {
@@ -398,9 +410,10 @@ func WriteAllowlist(w io.Writer, series []string, note string) error {
 	if len(series) == 0 {
 		b.WriteString("  []\n")
 	}
-	fmt.Fprintf(&b, "\ninclude_new_series: %v\nnew_series_days: %d\nmax_new_series: %d\n\nlead: %s\nwindow: %s\n\nmax_concurrent: %d\n\nmarket_poll: %s\nseries_poll: %s\n",
+	fmt.Fprintf(&b, "\ninclude_new_series: %v\nnew_series_days: %d\nmax_new_series: %d\n\nlead: %s\nwindow: %s\n\nmax_concurrent: %d\n\nmarket_poll: %s\nseries_poll: %s\n\nquote:\n  max_spread_bps: %d\n  min_size: %s\n",
 		d.IncludeNewSeries, int(d.NewSeriesFor/(24*time.Hour)), d.MaxNewSeries,
-		d.Lead, d.Window, d.MaxConcurrent, d.MarketPoll, d.SeriesPoll)
+		d.Lead, d.Window, d.MaxConcurrent, d.MarketPoll, d.SeriesPoll,
+		d.Quote.MaxSpreadBps, centi(d.Quote.MinSizeCenti))
 	_, err := io.WriteString(w, b.String())
 	return err
 }

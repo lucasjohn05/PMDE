@@ -35,8 +35,9 @@ type OpenRow struct {
 
 	OpenMs int64 `json:"open_ms"`
 
-	// The opening quote: the first two-sided book. Source says where it
-	// is from, "" if none was found. QuoteMs is when it appeared: the
+	// The opening quote: the first book with a two-sided quote under the
+	// quote rule (RuleSpread, RuleSize). Source says where it is from,
+	// "" if none was found. QuoteMs is when it appeared: the
 	// venue's timestamp on the book event (capture), or the end of the
 	// first 1-minute candle that closed two-sided (candles), so then it
 	// is late by up to a minute and Bid/Ask are that minute's close.
@@ -48,6 +49,12 @@ type OpenRow struct {
 	Mid     *int   `json:"mid,omitempty"`
 	BidSz   *int64 `json:"bid_sz,omitempty"`
 	AskSz   *int64 `json:"ask_sz,omitempty"`
+
+	// The QuoteRule the row was built under. A row built under another
+	// rule is rebuilt. Candle quotes have no sizes, so they were held
+	// to the spread cap only.
+	RuleSpread int   `json:"rule_spread_bps,omitempty"`
+	RuleSize   int64 `json:"rule_min_size,omitempty"`
 
 	// The first trade within the horizon after the open, if any.
 	TradeMs    int64  `json:"trade_ms,omitempty"`
@@ -102,6 +109,10 @@ type Backfill struct {
 	// Horizon is how long after the open the first two-sided candle and
 	// the first trade are looked for. Zero means an hour.
 	Horizon time.Duration
+
+	// Rule is what counts as the opening quote. Zero means
+	// DefaultQuoteRule.
+	Rule QuoteRule
 
 	Logf func(format string, args ...any)
 
@@ -183,10 +194,13 @@ func (b *Backfill) run(ctx context.Context, rows map[string]OpenRow, captured ma
 	if b.cutoff, err = b.REST.HistoricalCutoff(ctx); err != nil {
 		return err
 	}
+	if b.Rule == (QuoteRule{}) {
+		b.Rule = DefaultQuoteRule()
+	}
 	// done reports whether a market's row needs nothing more.
 	done := func(ticker string) bool {
 		r, ok := rows[ticker]
-		if !ok || r.Result == "" {
+		if !ok || r.Result == "" || !r.builtUnder(b.Rule) {
 			return false
 		}
 		_, hasCapture := captured[ticker]
@@ -302,6 +316,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 		Market: m.Ticker, Series: c.series, Event: m.Event,
 		Rung: m.Rung, StrikeType: m.StrikeType, Floor: m.FloorStrike, Cap: m.CapStrike,
 		OpenMs: m.Open.UnixMilli(), Result: m.Result,
+		RuleSpread: b.Rule.MaxSpreadBps, RuleSize: b.Rule.MinSizeCenti,
 	}
 	if m.HasSettlement && m.Result != "" {
 		row.SettleBps = &m.SettlementBps
@@ -323,7 +338,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 		if events, err = b.events(c.series, m); err != nil {
 			return row, err
 		}
-		if q, ok := openingFromEvents(events); ok {
+		if q, ok := openingFromEvents(events, b.Rule); ok {
 			row.Source, row.QuoteMs = SourceCapture, q.ms
 			row.Bid, row.Ask, row.Mid = &q.bid, &q.ask, ptr(mid(q.bid, q.ask))
 			row.BidSz, row.AskSz = &q.bidSz, &q.askSz
@@ -348,7 +363,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 			return row, err
 		}
 		for _, cd := range cs {
-			if cd.TwoSided() {
+			if cd.TwoSided() && b.Rule.MeetsSpread(cd.BidClose, cd.AskClose) {
 				row.Source, row.QuoteMs = SourceCandles, cd.End*1000
 				row.Bid, row.Ask, row.Mid = &cd.BidClose, &cd.AskClose, ptr(mid(cd.BidClose, cd.AskClose))
 				break
@@ -433,24 +448,28 @@ func eventMs(r EventRecord) int64 {
 	return r.RecvMs
 }
 
+// twoSided reports whether a record's book has any bid and ask at all,
+// whatever their size: what the price impact reads.
 func twoSided(r EventRecord) bool {
 	return r.Stale == "" && r.Bid != nil && r.Ask != nil && *r.Bid < *r.Ask
 }
 
-// openingFromEvents finds a capture's opening quote: the first book
-// with both a bid and an ask. ok is false if there is none, or if the
-// capture lost its book before reaching one, since the first two-sided
-// book seen after a hole need not be the first there was.
-func openingFromEvents(events []EventRecord) (q quote, ok bool) {
-	for _, r := range events {
-		if r.Stale != "" && r.Stale != "unsynced" {
-			return quote{}, false
-		}
-		if twoSided(r) {
-			return quote{ms: eventMs(r), bid: *r.Bid, ask: *r.Ask, bidSz: *r.BidSz, askSz: *r.AskSz}, true
-		}
+// builtUnder reports whether the row was built under rule.
+func (r OpenRow) builtUnder(rule QuoteRule) bool {
+	return r.RuleSpread == rule.MaxSpreadBps && r.RuleSize == rule.MinSizeCenti
+}
+
+// meets reports whether the row's opening quote qualifies under rule:
+// with its sizes if it has them (captures), on the spread alone if not
+// (candles).
+func (r OpenRow) meets(rule QuoteRule) bool {
+	if r.Bid == nil || r.Ask == nil || r.Mid == nil {
+		return false
 	}
-	return quote{}, false
+	if r.BidSz != nil && r.AskSz != nil {
+		return rule.Meets(*r.Bid, *r.Ask, *r.BidSz, *r.AskSz)
+	}
+	return rule.MeetsSpread(*r.Bid, *r.Ask)
 }
 
 // impactFromEvents reads the mid in effect just before tradeMs and the

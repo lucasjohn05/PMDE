@@ -230,7 +230,7 @@ func TestTriageSamplesWholeEvents(t *testing.T) {
 
 func TestAllowlistAndSeriesList(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteAllowlist(&buf, []string{"KXHIGHNY", "KXWTI"}, "2 of 5 series passed.\nSecond line."); err != nil {
+	if err := WriteAllowlist(&buf, []string{"KXHIGHNY", "KXWTI"}, "2 of 5 series passed.\nSecond line.", DefaultQuoteRule()); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := ParseConfig(buf.Bytes())
@@ -247,7 +247,7 @@ func TestAllowlistAndSeriesList(t *testing.T) {
 	}
 	// An empty allowlist is still a valid config (new series only).
 	buf.Reset()
-	WriteAllowlist(&buf, nil, "none passed")
+	WriteAllowlist(&buf, nil, "none passed", DefaultQuoteRule())
 	if cfg, err := ParseConfig(buf.Bytes()); err != nil || len(cfg.Series) != 0 {
 		t.Errorf("empty allowlist: %+v, %v", cfg, err)
 	}

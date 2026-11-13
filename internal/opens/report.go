@@ -131,6 +131,10 @@ type Options struct {
 	// Fees prices the taker fee for the net edge. Nil leaves the net
 	// figures out.
 	Fees *Fees
+
+	// Rule is what counts as an opening quote. A row whose quote does
+	// not meet it counts as unquoted. Zero means DefaultQuoteRule.
+	Rule QuoteRule
 }
 
 // DefaultResamples is enough for a 90% interval that is stable to a few
@@ -144,9 +148,12 @@ func Report(rows []OpenRow, opts Options) []SeriesReport {
 	if opts.Resamples <= 0 {
 		opts.Resamples = DefaultResamples
 	}
+	if opts.Rule == (QuoteRule{}) {
+		opts.Rule = DefaultQuoteRule()
+	}
 	bySeries := map[string][]OpenRow{}
 	for _, r := range rows {
-		bySeries[r.Series] = append(bySeries[r.Series], r)
+		bySeries[r.Series] = append(bySeries[r.Series], applyRule(r, opts.Rule))
 	}
 	var out []SeriesReport
 	for series, rs := range bySeries {
@@ -254,6 +261,32 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 		rep.Score, rep.HasScore = rep.NetEdgeBps/10000*modal*rep.OpensPerDay, true
 	}
 	return rep
+}
+
+// applyRule clears a row's opening quote if it does not meet rule, so
+// that everything downstream sees it as unquoted.
+func applyRule(r OpenRow, rule QuoteRule) OpenRow {
+	if r.Mid != nil && !r.meets(rule) {
+		r.Source, r.QuoteMs = "", 0
+		r.Bid, r.Ask, r.Mid, r.BidSz, r.AskSz = nil, nil, nil, nil, nil
+	}
+	return r
+}
+
+// BuiltUnderOtherRule counts the rows built under a different quote
+// rule. The report holds their quotes to rule, but a row built under a
+// stricter rule may have missed a quote that rule would take, and one
+// built under a looser rule may have taken an early quote that rule
+// rejects, ahead of a later one it would take: rerun the backfill to
+// rebuild them.
+func BuiltUnderOtherRule(rows []OpenRow, rule QuoteRule) int {
+	n := 0
+	for _, r := range rows {
+		if !r.builtUnder(rule) {
+			n++
+		}
+	}
+	return n
 }
 
 func utcDay(ms int64) int64 {

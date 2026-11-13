@@ -93,3 +93,13 @@ max_concurrent: 100
 # series list.
 market_poll: 1m
 series_poll: 15m
+
+# What counts as a two-sided quote, everywhere: triage, backfill, report,
+# the new-series alert and the bad-maker evaluation. A best bid and ask
+# at most max_spread_bps apart, each with at least min_size contracts
+# resting at its price; levels with less are passed over, so stubs and
+# sub-contract orders never count. Candlesticks have no sizes, so quotes
+# read from them are held to the spread cap only.
+quote:
+  max_spread_bps: 1000
+  min_size: 10

@@ -9,7 +9,12 @@ import (
 	"testing"
 )
 
-var calOpts = Options{MinOpens: 1, Seed: 7, Resamples: 1000}
+// calOpts takes every quote (anyQuote), so these tests are about the
+// statistics, not the quote rule.
+var calOpts = Options{MinOpens: 1, Seed: 7, Resamples: 1000, Rule: anyQuote}
+
+// anyQuote is a quote rule that any two-sided book meets.
+var anyQuote = QuoteRule{MaxSpreadBps: 9999, MinSizeCenti: 1}
 
 // calibratedRows builds n single-rung events whose outcomes are drawn
 // from their own opening mids: perfectly calibrated quotes.

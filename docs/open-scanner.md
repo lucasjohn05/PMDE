@@ -67,6 +67,31 @@ connection, one `orderbook_delta` subscription naming every rung
   subscription starts with a fresh snapshot per rung.
 - **Unsubscribing** is closing the connection.
 
+## What counts as a quote
+
+One definition is used everywhere: triage, backfill, report, the
+new-series alert and the bad-maker evaluation. It is `quote` in
+`opens.yaml`.
+
+- A **two-sided quote** is a best bid and a best ask no more than
+  `quote.max_spread_bps` apart (default 1000, 10c), each with at least
+  `quote.min_size` contracts resting at its price (default 10; at least
+  1).
+- Price levels with less than the minimum size are **passed over**, not
+  disqualifying: half a contract bid at 45c in front of 20 at 40c leaves
+  the quote at 40c. A 1c bid and a 99c ask (a stub book) fail the spread
+  cap whatever their size.
+- From a **capture**, the book is rebuilt level by level from the
+  snapshot and deltas, and the opening quote is the first moment the
+  rule is met.
+- **Candlesticks have no sizes**, so a quote read from one (triage, and
+  backfilled markets with no capture) is held to the spread cap only.
+  The report marks where that is the case (`capt`, `cal_from_candles`).
+- Each backfill and triage row records the rule it was built under
+  (`rule_spread_bps`, `rule_min_size`). A row built under another rule
+  is rebuilt on the next run. The report holds every row to the current
+  rule and says how many were built under a different one.
+
 ## Running it
 
 ```
@@ -81,8 +106,8 @@ KALSHI_KEY_PATH=/path/to/key.pem KALSHI_KEY_ID=<key id> \
 ./pmde-opens backfill -config opens.yaml -data-dir data -since 2026-10-15
 
 # the ranked table, plus data/opens/report.csv (reads fees.yaml for the
-# net edge; -seed fixes the bootstrap)
-./pmde-opens report -data-dir data -deciles
+# net edge and opens.yaml for the quote rule; -seed fixes the bootstrap)
+./pmde-opens report -config opens.yaml -data-dir data -deciles
 ```
 
 On the droplet the scanner is a second service in `deploy/compose.yaml`,
@@ -104,7 +129,7 @@ curl -s localhost:9101/metrics | grep '^opens_'
 docker compose -f deploy/compose.yaml --profile scan run --rm \
   --entrypoint /usr/local/bin/pmde-opens scan backfill -config /etc/pmde/opens.yaml -data-dir /data
 docker compose -f deploy/compose.yaml --profile scan run --rm \
-  --entrypoint /usr/local/bin/pmde-opens scan report -data-dir /data -fees /etc/pmde/fees.yaml -deciles
+  --entrypoint /usr/local/bin/pmde-opens scan report -config /etc/pmde/opens.yaml -data-dir /data -fees /etc/pmde/fees.yaml -deciles
 ```
 
 The backfill is incremental, so it runs from root's crontab on the
@@ -161,7 +186,7 @@ Per series, triage prints:
 |---|---|
 | opens/day, events/day | Markets settled in the period, and the events they belong to, per UTC day over the span of their open times. |
 | sampled | Markets whose candles were read. |
-| quoted 1m | Share of sampled opens with a two-sided quote at the close of the 1-minute candle ending within 60s of `open_time`: is anyone making the open? |
+| quoted 1m | Share of sampled opens with a two-sided quote (within the spread cap; candles have no sizes) at the close of the 1-minute candle ending within 60s of `open_time`: is anyone making the open? |
 | quoted | The same within the whole horizon (`-horizon`, default 10m). |
 | spread | Median opening spread, bps. |
 | fit rmse | Median RMSE of the normal-CDF fit across an event's rungs, and the events fitted. |
@@ -178,6 +203,9 @@ How it stays cheap:
 - **Rows are kept** in `opens/triage.jsonl`, so a rerun, or a run that
   was stopped, fetches only what is new. They are candle-only by design
   (no trades, no sizes) and separate from `backfill.jsonl`.
+
+Triage reads the quote rule from `-config` (default: none, so the
+defaults), and writes it into the config it produces.
 
 `-since` defaults to Kalshi's historical cutoff, which is as far back as
 the live endpoints triage uses reach. `-min-quoted-share X` writes the
@@ -204,6 +232,8 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | `max_concurrent` | 50 | Captures at once. One capture is one connection, covering one event's rungs. |
 | `market_poll` | `1m` | Poll interval for the watched series' unopened markets. |
 | `series_poll` | `15m` | Poll interval for the series list. |
+| `quote.max_spread_bps` | 1000 | Widest spread that is a quote. See "What counts as a quote". |
+| `quote.min_size` | 10 | Fewest contracts at a price, each side, that make a quote. |
 
 Unknown keys are errors. The checked-in allowlist (55 series: 48 daily
 temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD, KXWTI,
@@ -245,7 +275,8 @@ which the book is untrusted, until the next snapshot.
 
 A backfill row has the market's identity and strike, `open_ms`,
 `source` (`capture` or `candles`), `quote_ms`, `bid`, `ask`, `mid` (bps),
-`bid_sz`, `ask_sz`, the first trade (`trade_ms`, `trade_price`,
+`bid_sz`, `ask_sz` (the opening quote under the quote rule),
+`rule_spread_bps` and `rule_min_size` (that rule), the first trade (`trade_ms`, `trade_price`,
 `trade_count`, `taker_yes`), `mid_before`, `mid_after`, `result`,
 `settle_bps` and `settled_ms`. A row with a `result` is final; a row
 built before its market's capture existed is rebuilt once.
@@ -271,8 +302,8 @@ short-lived markets, and per-market series would grow without bound.
 ## The report's columns
 
 - **opens, /day**: markets with a row, per UTC day over the span seen.
-- **t→quote**: median time from `open_time` to the first two-sided
-  book. Exact from captures; from candlesticks it is an upper bound to
+- **quoted**: opens with an opening quote under the quote rule.
+- **t→quote**: median time from `open_time` to the opening quote. Exact from captures; from candlesticks it is an upper bound to
   the minute and is printed with `≤`.
 - **bid sz / ask sz, share**: the modal opening size per side, and the
   share of captured opens with exactly that size.
@@ -460,9 +491,9 @@ when checked).
   fetches, new series are found with `min_updated_ts`, assuming a new
   series' `last_updated_ts` is its creation time; if not, it is found
   at the next day's full fetch.
-- "Opening quote" means the first moment the book has both a bid and an
-  ask. A maker who posts in several steps is read at the first step
-  that makes the book two-sided, so the size may be partial.
+- "Opening quote" means the first moment the book meets the quote rule.
+  A maker who posts in several steps is read at the first step that
+  meets it, so the size may be partial.
 - A capture that lost its book before its first two-sided quote is not
   used for the opening quote (candles are); one that lost it later
   still is.

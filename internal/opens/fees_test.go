@@ -154,9 +154,9 @@ func TestNetEdgeAndScore(t *testing.T) {
 	}
 
 	// A spread wider than the edge: floored at zero, score zero, gross
-	// unchanged.
-	wide := Report(offRows("STD", 40, 3000, 4500, true), opts)[0]
-	if !wide.HasNet || wide.NetEdgeBps != 0 || !wide.HasScore || wide.Score != 0 || !near(wide.GrossScore, 0.4*250*40, 1e-6) {
+	// unchanged. 60c quoted, 70% realized: miscal 1000 bps, 58c wide.
+	wide := Report(offRows("STD", 40, 6000, 2900, true), opts)[0]
+	if !wide.HasNet || wide.NetEdgeBps != 0 || !wide.HasScore || wide.Score != 0 || !near(wide.GrossScore, 0.1*250*40, 1e-6) {
 		t.Errorf("wide spread: net %v score %v gross %v", wide.NetEdgeBps, wide.Score, wide.GrossScore)
 	}
 
@@ -180,7 +180,7 @@ func TestNetEdgeAndScore(t *testing.T) {
 
 	// Ranking is by the net score: the series with the bigger gross
 	// figure but a spread that eats the edge ranks below.
-	rows := append(offRows("TIGHT", 20, 3000, 200, true), offRows("WIDE", 40, 3000, 4500, true)...)
+	rows := append(offRows("TIGHT", 20, 3000, 200, true), offRows("WIDE", 40, 2950, 2900, true)...)
 	o := opts
 	o.Fees = &Fees{TakerRatePPM: 70000, Series: map[string]SeriesFee{"TIGHT": {"quadratic", 1_000_000}, "WIDE": {"quadratic", 1_000_000}}}
 	reps := Report(rows, o)

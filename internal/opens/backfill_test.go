@@ -200,9 +200,34 @@ func TestBackfillFromCandles(t *testing.T) {
 func intp(v int) *int       { return &v }
 func int64p(v int64) *int64 { return &v }
 
+// delta is a captured book change at ms after bfOpen: size added to (or
+// taken from, if negative) the yes or no bids at price, as Kalshi sends
+// it. Contracts are whole.
+func delta(seq int64, ms int64, side string, price int, contracts int64) EventRecord {
+	t := bfOpen.UnixMilli() + ms
+	return EventRecord{Type: "delta", Seq: seq, TsMs: t, RecvMs: t + 30, Side: side, Price: intp(price), Delta: int64p(contracts * 100)}
+}
+
+// withTop fills in each record's best bid and ask, any size, as the
+// capture writes them.
+func withTop(events []EventRecord) []EventRecord {
+	b := newQuoteBook()
+	for i, r := range events {
+		if r.Stale != "" || r.Type == "stale" {
+			continue
+		}
+		b.apply(r)
+		if bid, ask, bs, as, ok := b.best(1); ok {
+			events[i].Bid, events[i].BidSz, events[i].Ask, events[i].AskSz = intp(bid), int64p(bs), intp(ask), int64p(as)
+		}
+	}
+	return events
+}
+
 // writeCapture stores a capture of market for the backfill to find.
 func writeCapture(t *testing.T, dir, series, market string, events []EventRecord) {
 	t.Helper()
+	events = withTop(events)
 	for i := range events {
 		events[i].Market, events[i].Series, events[i].OpenMs = market, series, bfOpen.UnixMilli()
 	}
@@ -234,15 +259,22 @@ func TestBackfillFromCapture(t *testing.T) {
 	b := newBackfill(t, fake, "S")
 	writeCapture(t, b.Dir, "NEW", "NEW-D1-A", []EventRecord{
 		{Type: "snapshot", Seq: 1, RecvMs: ms - 4000},
-		// The maker posts the ask, then 180ms later the bid: 250 a side.
-		{Type: "delta", Seq: 2, TsMs: ms + 120, RecvMs: ms + 150, Ask: intp(4400), AskSz: int64p(25000)},
-		{Type: "delta", Seq: 3, TsMs: ms + 300, RecvMs: ms + 330, Bid: intp(3600), BidSz: int64p(25000), Ask: intp(4400), AskSz: int64p(25000)},
+		// A 1c/99c stub first: two-sided, but no quote.
+		delta(2, 50, "yes", 100, 1),
+		delta(3, 60, "no", 100, 1),
+		// The maker posts the ask (a no bid at 56c), then 180ms later
+		// the bid: 250 a side.
+		delta(4, 120, "no", 5600, 250),
+		delta(5, 300, "yes", 3600, 250),
 		// The trade at +10.25s lifts 30 of the ask; 2s later the maker
 		// reprices 2c up.
-		{Type: "delta", Seq: 4, TsMs: ms + 10250, RecvMs: ms + 10280, Bid: intp(3600), BidSz: int64p(25000), Ask: intp(4400), AskSz: int64p(22000)},
-		{Type: "delta", Seq: 5, TsMs: ms + 12000, RecvMs: ms + 12030, Bid: intp(3800), BidSz: int64p(25000), Ask: intp(4600), AskSz: int64p(25000)},
+		delta(6, 10250, "no", 5600, -30),
+		delta(7, 12000, "yes", 3600, -250),
+		delta(8, 12000, "yes", 3800, 250),
+		delta(9, 12000, "no", 5600, -220),
+		delta(10, 12000, "no", 5400, 250),
 		// Past the 5s the impact is read at.
-		{Type: "delta", Seq: 6, TsMs: ms + 40000, RecvMs: ms + 40030, Bid: intp(3000), BidSz: int64p(100), Ask: intp(4600), AskSz: int64p(25000)},
+		delta(11, 40000, "yes", 3800, -250),
 	})
 
 	stats, err := b.Run(context.Background())
@@ -296,7 +328,7 @@ func TestBackfillIgnoresACaptureWithAHole(t *testing.T) {
 	writeCapture(t, b.Dir, "S", "S-D1-T66", []EventRecord{
 		{Type: "snapshot", Seq: 1, RecvMs: ms - 4000},
 		{Type: "delta", Seq: 3, TsMs: ms + 100, RecvMs: ms + 130, Stale: "seq_gap"},
-		{Type: "snapshot", Seq: 1, RecvMs: ms + 900, Bid: intp(2100), BidSz: int64p(500), Ask: intp(2900), AskSz: int64p(500)},
+		{Type: "snapshot", Seq: 1, RecvMs: ms + 900, Yes: [][2]int64{{2100, 5000}}, No: [][2]int64{{7100, 5000}}},
 	})
 	if _, err := b.Run(context.Background()); err != nil {
 		t.Fatal(err)
