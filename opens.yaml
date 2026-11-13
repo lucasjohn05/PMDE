@@ -23,8 +23,9 @@ max_new_series: 100
 lead: 5s
 window: 60s
 
-# Captures (one websocket connection each) running at once. Opens past
-# the cap are skipped and counted in opens_skipped_total.
+# Captures running at once. A capture is one websocket connection
+# covering all the rungs of one event that open together. An event past
+# the cap is skipped whole and counted in opens_skipped_total.
 max_concurrent: 50
 
 # How often to poll the watched series' unopened markets, and the

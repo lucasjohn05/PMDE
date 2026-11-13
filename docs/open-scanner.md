@@ -18,7 +18,7 @@ The signature it looks for, per series:
 ## Pipeline
 
 ```
-Kalshi REST ──> discovery ──> schedule ──> capture (one kalshi.Client per open)
+Kalshi REST ──> discovery ──> schedule ──> capture (one connection per event)
   /series         daily series snapshot        │ bounded queue, blocks
   /markets        new-series log               ▼
   /events                                   recorder ──> opens/events/<series>/<day>.jsonl
@@ -30,16 +30,41 @@ Kalshi REST ──> pmde-opens backfill ──> opens/backfill.jsonl ──> pmd
 | Step | Code | Command |
 |---|---|---|
 | 1. Discovery | `internal/kalshi/rest.go`, `internal/opens/discovery.go`, `schedule.go` | `pmde-scan` |
-| 2. Open capture | `internal/kalshi/bookevent.go`, `internal/opens/capture.go` | `pmde-scan` |
+| 2. Open capture | `internal/kalshi/multifeed.go`, `eventclient.go`, `bookevent.go`, `internal/opens/capture.go` | `pmde-scan` |
 | 3. Settlement backfill | `internal/opens/backfill.go` | `pmde-opens backfill` |
 | 4. Analysis | `internal/opens/report.go`, `reporttext.go` | `pmde-opens report` |
 
-What is reused rather than duplicated: the capture runs the same
-`kalshi.Client` as `cmd/pmde` (its `Book`, `Feed`, `Queue`, reconnect
-and resync), through a new `OnEvent` hook that reports every snapshot
-and delta. The JSONL files go through `storage.Appender`, which wraps
-the tick segments' open/repair/flush code. The REST client retries with
-the websocket client's `backoff`.
+What is reused rather than duplicated: the capture uses the same
+`Book`, `Queue`, backoff and drop-and-mark-stale rule as `cmd/pmde`.
+The connection type is new: `kalshi.EventClient` holds the books of
+several markets on one subscription, next to the one-market `Client`
+that `cmd/pmde` runs, which is unchanged. The JSONL files go through
+`storage.Appender`, which wraps the tick segments' open/repair/flush
+code. The REST client retries with the websocket client's `backoff`.
+
+## How an event is captured
+
+The rungs of an event that open together are one capture: one
+connection, one `orderbook_delta` subscription naming every rung
+(`market_tickers`).
+
+- **Grouping.** When any rung of an event comes within `lead` of its
+  `open_time`, every scheduled rung of that event opening within
+  `window` of the earliest one is taken with it. The capture subscribes
+  `lead` before the first open and records until `window` after the
+  last. A rung opening later than that is a separate capture.
+- **Whole or not at all.** `max_concurrent` counts connections. An
+  event that comes due with every slot taken is skipped whole, and so is
+  one whose first rung has already opened. No event is captured in part.
+  `opens_skipped_total` counts the rungs.
+- **Shared seq.** Kalshi numbers every message of a subscription with
+  one `seq`: one snapshot per market first, then the deltas of all the
+  markets interleaved. A gap therefore cannot be pinned on a market, so
+  a gap, a dropped message or a bad update marks every book on the
+  connection stale. Each rung's record gets a `stale` line, each rung is
+  flagged incomplete, and the connection is replaced; the new
+  subscription starts with a fresh snapshot per rung.
+- **Unsubscribing** is closing the connection.
 
 ## Running it
 
@@ -96,7 +121,7 @@ next to the `:9100` one in `deploy/monitoring/config.alloy` to get the
 | `max_new_series` | 100 | At most this many new series (the most recent). |
 | `lead` | `5s` | Subscribe this long before `open_time`. |
 | `window` | `60s` | Record until this long after `open_time`. |
-| `max_concurrent` | 50 | Captures (connections) at once. |
+| `max_concurrent` | 50 | Captures at once. One capture is one connection, covering one event's rungs. |
 | `market_poll` | `1m` | Poll interval for the watched series' unopened markets. |
 | `series_poll` | `15m` | Poll interval for the series list. |
 
@@ -111,7 +136,7 @@ starting set of daily weather ladders, not a recommendation.
 | `new_series.jsonl` | scan | One line per series that was in no earlier snapshot. |
 | `events.jsonl` | scan | The events of scheduled markets: title, `mutually_exclusive`. |
 | `events/<series>/<YYYY-MM-DD>.jsonl` | scan | Captured book events; the day is the market's open day (UTC). |
-| `captures.jsonl` | scan | One line per finished capture: counts, resyncs, `complete`. |
+| `captures.jsonl` | scan | One line per captured market: counts, resyncs, `rungs` sharing its connection, `complete`. |
 | `backfill.jsonl` | backfill | One row per market. Rewritten atomically each run. |
 | `report.csv` | report | The ranked table. |
 
@@ -125,7 +150,9 @@ real ones):
  "side":"no","price":5600,"delta":25000,"ask":4400,"ask_sz":25000}
 ```
 
-`type` is `snapshot`, `delta` or `stale`. `ts_ms` is Kalshi's timestamp
+`type` is `snapshot`, `delta` or `stale`. `seq` is the subscription's,
+shared by the rungs of the event, so one market's records skip numbers.
+`ts_ms` is Kalshi's timestamp
 (snapshots have none), `recv_ms` this host's receive time. `price` is
 in bps on the side named; `delta` and sizes are hundredths of a
 contract. `bid`/`ask` are the best yes bid and ask after the event, each
@@ -143,10 +170,11 @@ built before its market's capture existed is rebuilt once.
 
 | Metric | Meaning |
 |---|---|
-| `opens_skipped_total{reason}` | Opens scheduled but not captured: `concurrency` (cap reached), `late` (already open when due), `vanished` (left the unopened list before `open_time`). |
-| `opens_captures_total`, `opens_captures_active` | Captures started; running now. |
+| `opens_skipped_total{reason}` | Market opens scheduled but not captured: `concurrency` (cap reached), `late` (already open when due), `vanished` (left the unopened list before `open_time`). Counts markets; an event skipped whole adds one per rung. |
+| `opens_captures_total`, `opens_captures_active` | Captures (connections) started; running now. |
+| `opens_captured_markets_total` | Market opens covered by those captures. |
 | `opens_events_total` | Book events recorded. |
-| `opens_capture_resyncs_total{reason}` | A capture lost its book mid-window. |
+| `opens_capture_resyncs_total{reason}` | A captured market lost its book mid-window. One break counts once per rung on the connection. |
 | `opens_scheduled_markets`, `opens_watched_series` | Discovery state. |
 | `opens_new_series_total` | Series detected as new. |
 | `opens_rest_responses_total{code}` | REST responses, retries included; watch `429`. |
@@ -224,14 +252,15 @@ auth.
 the first deltas are the opening orders. This is not documented; it was
 observed (`testdata/kalshi_open_capture.jsonl` is that session).
 
-**One connection per market.** Kalshi allows many markets on one
-`orderbook_delta` subscription, with one `seq` shared across them. The
-existing `Client` and `Feed` are one-market, and reusing them was the
-brief, so each capture is its own connection. The documented limit is
-200 connections on the lower tiers, shared with `pmde`; `max_concurrent`
-defaults to 50. A ladder of 30 rungs opening in the same second takes
-30 slots. Unsubscribing is closing the connection; no `unsubscribe`
-command is sent.
+**One subscription covers an event.** A subscribe with `market_tickers`
+puts every market on one subscription with one `seq` across them. The
+docs say only that seq "counts messages on one subscription"; the
+snapshots-then-interleaved-deltas order was observed on a live
+two-market subscription. Two limits are documented without numbers: a
+per-subscription market limit (error 26) and a command rate limit
+(error 27). A ladder wider than the first would fail to subscribe; the
+capture logs the venue's error, retries, and ends incomplete. The
+connection limit is 200 on the lower tiers, shared with `pmde`.
 
 **The market object has no series ticker.** Discovery asks for each
 watched series' unopened markets by `series_ticker`, so the series is
@@ -270,8 +299,8 @@ when checked).
 
 ## Not built
 
-- No multi-market subscriptions (see above), so no way past the
-  per-connection cap for very wide ladders.
+- No splitting of an event across connections if it is wider than
+  Kalshi's undocumented per-subscription market limit.
 - No trade channel capture: first trades come from REST afterwards.
 - No persistence of the schedule: it is rebuilt from a poll at startup,
   so an open within the first poll after a restart can be missed.

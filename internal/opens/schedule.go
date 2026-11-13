@@ -1,6 +1,8 @@
 package opens
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"time"
 
@@ -71,23 +73,74 @@ func (s *Schedule) Drop(series string) {
 	}
 }
 
-// Due takes out every market whose open_time is within lead of now.
-// Markets still ahead of their open_time are returned in due, soonest
-// first. Markets already past it come back in late: subscribing now
-// would record a book that is no longer the opening one.
-func (s *Schedule) Due(now time.Time, lead time.Duration) (due, late []Opening) {
+// EventOpening is the rungs of one event that open together: what one
+// capture connection subscribes to.
+type EventOpening struct {
+	Series string
+	Event  string    // the event ticker; the market ticker for a market without one
+	Rungs  []Opening // by open_time, then ticker; never empty
+}
+
+// First and Last are the earliest and latest open_time among the rungs.
+func (e EventOpening) First() time.Time { return e.Rungs[0].Market.Open }
+func (e EventOpening) Last() time.Time  { return e.Rungs[len(e.Rungs)-1].Market.Open }
+
+// eventKey groups a market with the other rungs of its event.
+func eventKey(o Opening) string {
+	if o.Market.Event == "" {
+		return o.Series + "/" + o.Market.Ticker
+	}
+	return o.Series + "/" + o.Market.Event
+}
+
+// Due takes out every event with a rung whose open_time is within lead
+// of now, whole: all of the scheduled rungs of that event that open
+// within span of its earliest one go with it, so a ladder is one
+// EventOpening however its open_times are staggered inside that span.
+// (Rungs opening later than that stay scheduled and come due as a
+// group of their own.)
+//
+// Events whose earliest rung is still ahead of its open_time are
+// returned in due, soonest first. Events already past it come back in
+// late: subscribing now would record a book that is no longer the
+// opening one.
+func (s *Schedule) Due(now time.Time, lead, span time.Duration) (due, late []EventOpening) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for ticker, o := range s.pending {
-		if o.Market.Open.Sub(now) > lead {
-			continue
+	dueKeys := map[string]bool{}
+	for _, o := range s.pending {
+		if o.Market.Open.Sub(now) <= lead {
+			dueKeys[eventKey(o)] = true
 		}
-		delete(s.pending, ticker)
-		s.done[ticker] = o.Market.Open
-		if now.After(o.Market.Open) {
-			late = append(late, o)
-		} else {
-			due = append(due, o)
+	}
+	if len(dueKeys) > 0 {
+		groups := map[string][]Opening{}
+		for _, o := range s.pending {
+			if k := eventKey(o); dueKeys[k] {
+				groups[k] = append(groups[k], o)
+			}
+		}
+		for _, rungs := range groups {
+			sortOpenings(rungs)
+			first := rungs[0].Market.Open
+			n := 0
+			for n < len(rungs) && rungs[n].Market.Open.Sub(first) <= span {
+				n++
+			}
+			rungs = rungs[:n]
+			for _, o := range rungs {
+				delete(s.pending, o.Market.Ticker)
+				s.done[o.Market.Ticker] = o.Market.Open
+			}
+			ev := EventOpening{Series: rungs[0].Series, Event: rungs[0].Market.Event, Rungs: rungs}
+			if ev.Event == "" {
+				ev.Event = rungs[0].Market.Ticker
+			}
+			if now.After(first) {
+				late = append(late, ev)
+			} else {
+				due = append(due, ev)
+			}
 		}
 	}
 	for ticker, open := range s.done {
@@ -95,9 +148,15 @@ func (s *Schedule) Due(now time.Time, lead time.Duration) (due, late []Opening) 
 			delete(s.done, ticker)
 		}
 	}
-	sortOpenings(due)
-	sortOpenings(late)
+	sortEvents(due)
+	sortEvents(late)
 	return due, late
+}
+
+func sortEvents(es []EventOpening) {
+	slices.SortFunc(es, func(a, b EventOpening) int {
+		return cmp.Or(a.First().Compare(b.First()), cmp.Compare(a.Series, b.Series), cmp.Compare(a.Event, b.Event))
+	})
 }
 
 // Len is how many markets are scheduled.

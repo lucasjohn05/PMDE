@@ -43,8 +43,9 @@ type Config struct {
 	// long after open_time it records.
 	Lead, Window time.Duration
 
-	// MaxConcurrent caps captures running at once (one websocket
-	// connection each). Opens past the cap are skipped and counted.
+	// MaxConcurrent caps captures running at once. A capture is one
+	// websocket connection covering the rungs of one event that open
+	// together; an event past the cap is skipped whole and counted.
 	MaxConcurrent int
 
 	// MarketPoll and SeriesPoll are how often the unopened markets of

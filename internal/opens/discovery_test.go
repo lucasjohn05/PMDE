@@ -342,28 +342,61 @@ func TestPollMarketsBuildsSchedule(t *testing.T) {
 func TestScheduleDue(t *testing.T) {
 	s := NewSchedule()
 	t0 := time.Date(2026, 11, 12, 15, 0, 0, 0, time.UTC)
-	mk := func(ticker string, open time.Time) kalshi.Market { return kalshi.Market{Ticker: ticker, Open: open} }
-	s.Update("S", []kalshi.Market{mk("soon", t0.Add(4*time.Second)), mk("sooner", t0.Add(2*time.Second)),
-		mk("later", t0.Add(time.Minute)), mk("past", t0.Add(-time.Second))})
-
-	due, late := s.Due(t0, 5*time.Second)
-	if len(due) != 2 || due[0].Market.Ticker != "sooner" || due[1].Market.Ticker != "soon" || due[0].Series != "S" {
-		t.Errorf("due %+v", due)
+	mk := func(ticker, event string, open time.Time) kalshi.Market {
+		return kalshi.Market{Ticker: ticker, Event: event, Open: open}
 	}
-	if len(late) != 1 || late[0].Market.Ticker != "past" {
+	tickers := func(e EventOpening) string {
+		var ts []string
+		for _, o := range e.Rungs {
+			ts = append(ts, o.Market.Ticker)
+		}
+		return e.Event + fmt.Sprint(ts)
+	}
+	s.Update("S", []kalshi.Market{
+		// A ladder: two rungs due now, a third 20s later (inside the
+		// span), a fourth two minutes later (outside it).
+		mk("L-2", "L", t0.Add(4*time.Second)), mk("L-1", "L", t0.Add(4*time.Second)),
+		mk("L-3", "L", t0.Add(24*time.Second)), mk("L-4", "L", t0.Add(2*time.Minute)),
+		mk("SOON-1", "SOON", t0.Add(2*time.Second)),
+		mk("LATER-1", "LATER", t0.Add(time.Minute)),
+		// Past its open, with a rung that is not: the event is late whole.
+		mk("PAST-1", "PAST", t0.Add(-time.Second)), mk("PAST-2", "PAST", t0.Add(3*time.Second)),
+		mk("LONE", "", t0.Add(time.Second)), // no event ticker: its own group
+	})
+
+	due, late := s.Due(t0, 5*time.Second, time.Minute)
+	var got []string
+	for _, e := range due {
+		got = append(got, tickers(e))
+		if e.Series != "S" {
+			t.Errorf("series %q", e.Series)
+		}
+	}
+	if want := "[LONE[LONE] SOON[SOON-1] L[L-1 L-2 L-3]]"; fmt.Sprint(got) != want {
+		t.Errorf("due %v, want %s", got, want)
+	}
+	if len(late) != 1 || tickers(late[0]) != "PAST[PAST-1 PAST-2]" {
 		t.Errorf("late %+v", late)
 	}
-	if s.Len() != 1 {
-		t.Errorf("%d left, want 1", s.Len())
+	if l := due[2]; !l.First().Equal(t0.Add(4*time.Second)) || !l.Last().Equal(t0.Add(24*time.Second)) {
+		t.Errorf("ladder first %v last %v", l.First(), l.Last())
+	}
+	if s.Len() != 2 {
+		t.Errorf("%d left, want 2 (L-4 and LATER-1)", s.Len())
 	}
 	// A poll that still lists a taken market does not reschedule it,
 	// and its absence later is not counted as vanished.
-	added, vanished := s.Update("S", []kalshi.Market{mk("soon", t0.Add(4*time.Second)), mk("later", t0.Add(time.Minute))})
-	if added != 0 || vanished != 0 || s.Len() != 1 {
+	added, vanished := s.Update("S", []kalshi.Market{mk("L-1", "L", t0.Add(4*time.Second)),
+		mk("L-4", "L", t0.Add(2*time.Minute)), mk("LATER-1", "LATER", t0.Add(time.Minute))})
+	if added != 0 || vanished != 0 || s.Len() != 2 {
 		t.Errorf("added %d vanished %d len %d after re-listing a taken market", added, vanished, s.Len())
 	}
-	if due, late := s.Due(t0.Add(time.Second), 5*time.Second); len(due)+len(late) != 0 {
-		t.Errorf("a market came due twice: %+v %+v", due, late)
+	if due, late := s.Due(t0.Add(time.Second), 5*time.Second, time.Minute); len(due)+len(late) != 0 {
+		t.Errorf("an event came due twice: %+v %+v", due, late)
+	}
+	// The late rung of the ladder comes due on its own.
+	if due, _ := s.Due(t0.Add(2*time.Minute-3*time.Second), 5*time.Second, time.Minute); len(due) != 1 || tickers(due[0]) != "L[L-4]" {
+		t.Errorf("the ladder's late rung: %+v", due)
 	}
 	s.Drop("S")
 	if s.Len() != 0 {

@@ -24,6 +24,7 @@ var skipReasons = []string{SkipConcurrency, SkipLate, SkipVanished}
 type Opens struct {
 	skipped       *prometheus.CounterVec
 	captures      prometheus.Counter
+	markets       prometheus.Counter
 	active        prometheus.Gauge
 	events        prometheus.Counter
 	resyncs       *prometheus.CounterVec
@@ -40,15 +41,19 @@ func NewOpens(reg prometheus.Registerer) *Opens {
 	o := &Opens{
 		skipped: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "opens_skipped_total",
-			Help: "Market opens that were scheduled but not captured, by why.",
+			Help: "Market opens that were scheduled but not captured, by why. Counts markets: an event skipped whole adds one per rung.",
 		}, []string{"reason"}),
 		captures: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "opens_captures_total",
-			Help: "Market opens a capture was started for.",
+			Help: "Captures started: one connection each, covering the rungs of one event that open together.",
+		}),
+		markets: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "opens_captured_markets_total",
+			Help: "Market opens covered by the captures started.",
 		}),
 		active: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "opens_captures_active",
-			Help: "Captures running now: one websocket subscription each.",
+			Help: "Captures running now: one websocket connection each. This is what max_concurrent caps.",
 		}),
 		events: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "opens_events_total",
@@ -83,7 +88,7 @@ func NewOpens(reg prometheus.Registerer) *Opens {
 			Help: "Time capture book goroutines spent blocked sending events to the opens writer because its queue was full.",
 		}),
 	}
-	reg.MustRegister(o.skipped, o.captures, o.active, o.events, o.resyncs, o.scheduled,
+	reg.MustRegister(o.skipped, o.captures, o.markets, o.active, o.events, o.resyncs, o.scheduled,
 		o.watched, o.newSeries, o.rest, o.pollErrors, o.writerBlocked)
 	// Every series that can be alerted on exists from the start.
 	for _, r := range skipReasons {
@@ -107,10 +112,12 @@ func (o *Opens) Skipped(reason string, n int) {
 	}
 }
 
-// CaptureStarted and CaptureDone bracket one capture.
-func (o *Opens) CaptureStarted() {
+// CaptureStarted and CaptureDone bracket one capture: one connection
+// covering that many market opens.
+func (o *Opens) CaptureStarted(markets int) {
 	if o != nil {
 		o.captures.Inc()
+		o.markets.Add(float64(markets))
 		o.active.Inc()
 	}
 }

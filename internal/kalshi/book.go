@@ -122,7 +122,13 @@ func (b *Book) ApplyDelta(raw []byte) error {
 		return fmt.Errorf("kalshi: %w on %s: have seq %d, got seq %d (book is stale, resync required)",
 			ErrSeqGap, b.MarketTicker, b.lastSeq, env.Seq)
 	}
+	return b.applyDelta(env)
+}
 
+// applyDelta applies a decoded orderbook_delta without checking its seq
+// against the book's. ApplyDelta checks first; MultiFeed, where one seq
+// runs across every market on the subscription, checks it itself.
+func (b *Book) applyDelta(env envelope) error {
 	var msg deltaMsg
 	if err := json.Unmarshal(env.Msg, &msg); err != nil {
 		return fmt.Errorf("kalshi: decoding delta msg: %w", err)

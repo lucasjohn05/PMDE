@@ -71,6 +71,10 @@ type CaptureRecord struct {
 	Events  int    `json:"events"`  // EventRecords written
 	Resyncs int    `json:"resyncs"` // times a trusted book was lost
 
+	// Rungs is how many markets shared the connection: the rungs of
+	// the event that opened together.
+	Rungs int `json:"rungs,omitempty"`
+
 	// Complete is true if the book was synced before open_time and
 	// never lost: the record holds every book event from the open on.
 	Complete bool `json:"complete"`
@@ -265,20 +269,24 @@ const errUnsafeSeries = constError("not recording: the series ticker is not a sa
 // how much of Lead can be lost before a capture starts connecting.
 const captureTick = 250 * time.Millisecond
 
-// Capturer records market opens. Each market that comes due gets one
-// kalshi.Client, the same client cmd/pmde runs, on its own connection:
-// it subscribes Lead before open_time, records every book event until
-// Window after it, and then closes the connection, which ends the
+// Capturer records market opens, an event at a time. The rungs of an
+// event that open together share one connection and one orderbook_delta
+// subscription (kalshi.EventClient): it subscribes Lead before the
+// first open_time, records every book event of every rung until Window
+// after the last, and then closes the connection, which ends the
 // subscription.
 //
 // Subscribing before the open works: Kalshi answers with an empty
-// snapshot, and the first deltas are the opening orders. Reconnects and
-// resyncs are the Client's; a capture that lost its book has stale
-// records marking the hole and is flagged incomplete.
+// snapshot per market, and the first deltas are the opening orders.
+// Reconnects and resyncs are the EventClient's. One seq runs across the
+// rungs, so whatever breaks one book breaks them all: every rung gets a
+// stale record marking the hole, and every rung is flagged incomplete.
 //
-// At most Cfg.MaxConcurrent captures run at once. An open past the cap
-// is skipped and counted in opens_skipped_total, never queued: a
-// capture that starts late has missed what it was for.
+// At most Cfg.MaxConcurrent captures, which is to say connections, run
+// at once. An event past the cap is skipped whole and counted in
+// opens_skipped_total (once per rung), never queued and never captured
+// in part: a capture that starts late has missed what it was for, and
+// half a ladder cannot be fitted.
 type Capturer struct {
 	URL    string                      // the websocket endpoint
 	Header func() (http.Header, error) // auth headers for each dial
@@ -307,7 +315,7 @@ func (c *Capturer) logf(format string, args ...any) {
 	}
 }
 
-// Run starts a capture for each market as it comes due, until ctx is
+// Run starts a capture for each event as it comes due, until ctx is
 // cancelled; it returns once the captures in flight have ended.
 func (c *Capturer) Run(ctx context.Context) {
 	slots := make(chan struct{}, c.Cfg.MaxConcurrent)
@@ -321,79 +329,98 @@ func (c *Capturer) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		due, late := c.Schedule.Due(c.now(), c.Cfg.Lead)
-		if len(late) > 0 {
-			c.Metrics.Skipped(metrics.SkipLate, len(late))
-			c.logf("opens: skipped %d market(s) already past their open_time (first: %s)", len(late), late[0].Market.Ticker)
+		due, late := c.Schedule.Due(c.now(), c.Cfg.Lead, c.Cfg.Window)
+		for _, e := range late {
+			c.Metrics.Skipped(metrics.SkipLate, len(e.Rungs))
+			c.logf("opens: skipped %s (%d rung(s)): already past its open_time", e.Event, len(e.Rungs))
 		}
-		skipped := 0
-		for _, o := range due {
+		for _, e := range due {
 			select {
 			case slots <- struct{}{}:
 				wg.Go(func() {
 					defer func() { <-slots }()
-					c.capture(ctx, o)
+					c.capture(ctx, e)
 				})
 			default:
-				skipped++
+				c.Metrics.Skipped(metrics.SkipConcurrency, len(e.Rungs))
+				c.logf("opens: skipped %s (%d rung(s)): %d captures already running (max_concurrent)",
+					e.Event, len(e.Rungs), c.Cfg.MaxConcurrent)
 			}
-		}
-		if skipped > 0 {
-			c.Metrics.Skipped(metrics.SkipConcurrency, skipped)
-			c.logf("opens: skipped %d open(s): %d captures already running (max_concurrent)", skipped, c.Cfg.MaxConcurrent)
 		}
 	}
 }
 
-// capture records one market's open.
-func (c *Capturer) capture(ctx context.Context, o Opening) {
-	c.Metrics.CaptureStarted()
+// rungState is the bookkeeping for one rung during a capture. Touched
+// only from OnEvent, which the EventClient never calls concurrently,
+// and read after Run returns.
+type rungState struct {
+	o                Opening
+	rec              CaptureRecord
+	trusted          bool
+	syncedBeforeOpen bool
+}
+
+// capture records the open of one event on one connection.
+func (c *Capturer) capture(ctx context.Context, e EventOpening) {
+	c.Metrics.CaptureStarted(len(e.Rungs))
 	defer c.Metrics.CaptureDone()
 
 	start := c.now()
-	openMs := o.Market.Open.UnixMilli()
-	rec := CaptureRecord{
-		Market: o.Market.Ticker, Series: o.Series, Event: o.Market.Event,
-		OpenMs: openMs, StartMs: start.UnixMilli(),
+	rungs := make(map[string]*rungState, len(e.Rungs))
+	tickers := make([]string, 0, len(e.Rungs))
+	for _, o := range e.Rungs {
+		tickers = append(tickers, o.Market.Ticker)
+		rungs[o.Market.Ticker] = &rungState{o: o, rec: CaptureRecord{
+			Market: o.Market.Ticker, Series: o.Series, Event: o.Market.Event,
+			OpenMs: o.Market.Open.UnixMilli(), StartMs: start.UnixMilli(), Rungs: len(e.Rungs),
+		}}
 	}
-	// Touched only from OnEvent, which the Client never calls
-	// concurrently, and read after Run returns.
-	syncedBeforeOpen, trusted := false, false
 
-	cctx, cancel := context.WithTimeout(ctx, o.Market.Open.Add(c.Cfg.Window).Sub(start))
+	cctx, cancel := context.WithTimeout(ctx, e.Last().Add(c.Cfg.Window).Sub(start))
 	defer cancel()
-	client := &kalshi.Client{
-		URL:    c.URL,
-		Ticker: o.Market.Ticker,
-		Header: c.Header,
-		Logf:   func(format string, args ...any) { c.logf("["+o.Market.Ticker+"] "+format, args...) },
+	client := &kalshi.EventClient{
+		URL:     c.URL,
+		Tickers: tickers,
+		Header:  c.Header,
+		Logf:    func(format string, args ...any) { c.logf("["+e.Event+"] "+format, args...) },
 		OnEvent: func(ev kalshi.BookEvent) {
-			if ev.Stale && trusted {
-				rec.Resyncs++
+			r := rungs[ev.Market]
+			if r == nil {
+				return // not a rung of this capture; the feed has rejected it
+			}
+			if ev.Stale && r.trusted {
+				r.rec.Resyncs++
 				c.Metrics.Resync(ev.StaleReason)
 			}
-			trusted = !ev.Stale
-			if trusted && ev.Recv.UnixMilli() <= openMs {
-				syncedBeforeOpen = true
+			r.trusted = !ev.Stale
+			if r.trusted && ev.Recv.UnixMilli() <= r.rec.OpenMs {
+				r.syncedBeforeOpen = true
 			}
-			rec.Events++
-			// ctx, not cctx: the events of the window's last instant
-			// are still wanted.
-			c.Recorder.Send(ctx, eventRecord(o, ev))
+			r.rec.Events++
+			// ctx, not cctx: the events of the last instant of the
+			// window are still wanted.
+			c.Recorder.Send(ctx, eventRecord(r.o, ev))
 		},
 	}
 	client.Run(cctx)
 
-	rec.EndMs = c.now().UnixMilli()
-	rec.Complete = syncedBeforeOpen && rec.Resyncs == 0
+	end := c.now().UnixMilli()
+	incomplete := 0
 	c.mu.Lock()
-	err := storage.AppendLine(filepath.Join(c.Dir, capturesFile), rec)
-	c.mu.Unlock()
-	if err != nil {
-		c.logf("opens: %v", err)
+	for _, t := range tickers {
+		r := rungs[t]
+		r.rec.EndMs = end
+		r.rec.Complete = r.syncedBeforeOpen && r.rec.Resyncs == 0
+		if !r.rec.Complete {
+			incomplete++
+		}
+		if err := storage.AppendLine(filepath.Join(c.Dir, capturesFile), r.rec); err != nil {
+			c.logf("opens: %v", err)
+		}
 	}
-	if !rec.Complete {
-		c.logf("opens: %s: incomplete capture (%d events, %d resyncs, synced before open: %v)",
-			rec.Market, rec.Events, rec.Resyncs, syncedBeforeOpen)
+	c.mu.Unlock()
+	if incomplete > 0 {
+		c.logf("opens: %s: %d of %d rung(s) captured incompletely (book not synced before the open, or lost during the window)",
+			e.Event, incomplete, len(e.Rungs))
 	}
 }

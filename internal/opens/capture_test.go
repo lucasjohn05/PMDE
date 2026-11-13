@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -44,11 +45,14 @@ func openCaptureLines(t *testing.T) [][]byte {
 }
 
 // wsVenue is a websocket server that, per connection, waits for the
-// subscribe message and then runs script with the subscribed ticker.
+// subscribe message and then runs script with the subscribed tickers.
 type wsVenue struct {
-	script func(conn *websocket.Conn, ticker string)
+	script func(conn *websocket.Conn, tickers []string)
 	conns  atomic.Int32
 	closed atomic.Int32 // connections the client hung up on
+
+	mu   sync.Mutex
+	subs [][]string // the tickers of each subscribe, in order
 }
 
 func (v *wsVenue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,15 +62,19 @@ func (v *wsVenue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	v.conns.Add(1)
-	_, sub, err := conn.ReadMessage()
+	_, raw, err := conn.ReadMessage()
 	if err != nil {
 		return
 	}
-	ticker := ""
-	if i := strings.Index(string(sub), `"market_ticker":"`); i >= 0 {
-		rest := string(sub)[i+len(`"market_ticker":"`):]
-		ticker = rest[:strings.IndexByte(rest, '"')]
+	var sub struct {
+		Params struct {
+			MarketTickers []string `json:"market_tickers"`
+		} `json:"params"`
 	}
+	json.Unmarshal(raw, &sub)
+	v.mu.Lock()
+	v.subs = append(v.subs, sub.Params.MarketTickers)
+	v.mu.Unlock()
 	gone := make(chan struct{})
 	go func() {
 		defer close(gone)
@@ -77,10 +85,31 @@ func (v *wsVenue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	if v.script != nil {
-		v.script(conn, ticker)
+		v.script(conn, sub.Params.MarketTickers)
 	}
 	<-gone
 	v.closed.Add(1)
+}
+
+func (v *wsVenue) subscriptions() [][]string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([][]string(nil), v.subs...)
+}
+
+func wsSnap(seq int, ticker string) []byte {
+	return []byte(fmt.Sprintf(`{"type":"orderbook_snapshot","sid":1,"seq":%d,"msg":{"market_ticker":%q}}`, seq, ticker))
+}
+
+func wsDelta(seq int, ticker, side, price, delta string) []byte {
+	return []byte(fmt.Sprintf(`{"type":"orderbook_delta","sid":1,"seq":%d,"msg":{"market_ticker":%q,"price_dollars":%q,"delta_fp":%q,"side":%q,"ts_ms":1794528712733}}`,
+		seq, ticker, price, delta, side))
+}
+
+func wsSend(conn *websocket.Conn, lines ...[]byte) {
+	for _, l := range lines {
+		conn.WriteMessage(websocket.TextMessage, l)
+	}
 }
 
 type captureRig struct {
@@ -155,24 +184,19 @@ func (rig *captureRig) captures(t *testing.T) []CaptureRecord {
 }
 
 // A market that comes due is subscribed before its open, every book
-// event is recorded with the market's identity, and the subscription
-// ends when the window does.
+// event is recorded with the identity of the market, and the
+// subscription ends when the window does.
 func TestCaptureRecordsTheOpen(t *testing.T) {
 	lines := openCaptureLines(t)
 	open := time.Now().Add(400 * time.Millisecond)
 	var subscribedAt atomic.Int64
-	v := &wsVenue{script: func(conn *websocket.Conn, ticker string) {
+	v := &wsVenue{script: func(conn *websocket.Conn, tickers []string) {
 		subscribedAt.Store(time.Now().UnixMilli())
 		// The ack and the empty snapshot at once; the deltas at the open.
-		for _, l := range lines[:2] {
-			conn.WriteMessage(websocket.TextMessage, l)
-		}
+		wsSend(conn, lines[:2]...)
 		time.Sleep(time.Until(open.Add(20 * time.Millisecond)))
-		for _, l := range lines[2:] {
-			conn.WriteMessage(websocket.TextMessage, l)
-		}
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(
-			`{"type":"orderbook_delta","sid":1,"seq":9,"msg":{"market_ticker":%q,"price_dollars":"0.9200","delta_fp":"15.00","side":"yes","ts_ms":1794528732000}}`, ticker)))
+		wsSend(conn, lines[2:]...)
+		wsSend(conn, wsDelta(9, tickers[0], "yes", "0.9200", "15.00"))
 	}}
 	rig := startCapturer(t, v, captureConfig(300*time.Millisecond, 400*time.Millisecond, 4))
 	rig.c.Schedule.Update("KXNHL2PTOTAL", []kalshi.Market{{
@@ -189,7 +213,7 @@ func TestCaptureRecordsTheOpen(t *testing.T) {
 	}
 	cap := rig.captures(t)[0]
 	if cap.Market != openTicker || cap.Series != "KXNHL2PTOTAL" || cap.Event != "KXNHL2PTOTAL-26NOV12MTLBOS" ||
-		cap.OpenMs != open.UnixMilli() || cap.Events != 9 || cap.Resyncs != 0 || !cap.Complete {
+		cap.OpenMs != open.UnixMilli() || cap.Events != 9 || cap.Resyncs != 0 || cap.Rungs != 1 || !cap.Complete {
 		t.Errorf("capture record %+v", cap)
 	}
 	// EndMs is truncated to the millisecond, so allow one either side.
@@ -233,82 +257,162 @@ func TestCaptureRecordsTheOpen(t *testing.T) {
 	}
 }
 
-// Opens past the concurrency cap are skipped and counted, and so are
-// markets that come due after they opened.
-func TestCaptureSkipsPastTheCapAndLateMarkets(t *testing.T) {
-	v := &wsVenue{script: func(conn *websocket.Conn, ticker string) {
-		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(
-			`{"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":%q}}`, ticker)))
+// The rungs of an event share one connection and one subscription, with
+// one seq across them; each rung still gets its own records.
+func TestCaptureEventOnOneConnection(t *testing.T) {
+	open := time.Now().Add(400 * time.Millisecond)
+	v := &wsVenue{script: func(conn *websocket.Conn, tickers []string) {
+		for i, tk := range tickers {
+			wsSend(conn, wsSnap(i+1, tk))
+		}
+		time.Sleep(time.Until(open.Add(20 * time.Millisecond)))
+		// The maker walks the ladder: an ask and a bid on each rung,
+		// interleaved on the shared seq.
+		seq := len(tickers)
+		for _, tk := range tickers {
+			seq++
+			wsSend(conn, wsDelta(seq, tk, "no", "0.5600", "250.00"))
+		}
+		for _, tk := range tickers {
+			seq++
+			wsSend(conn, wsDelta(seq, tk, "yes", "0.3600", "250.00"))
+		}
 	}}
-	rig := startCapturer(t, v, captureConfig(300*time.Millisecond, 200*time.Millisecond, 2))
-	open := time.Now().Add(350 * time.Millisecond)
+	rig := startCapturer(t, v, captureConfig(300*time.Millisecond, 300*time.Millisecond, 1))
+	// The third rung opens 100ms after the others: still the same
+	// capture, which runs until the window after the last open.
 	rig.c.Schedule.Update("S", []kalshi.Market{
-		{Ticker: "S-A", Open: open}, {Ticker: "S-B", Open: open}, {Ticker: "S-C", Open: open}, {Ticker: "S-D", Open: open},
-		{Ticker: "S-LATE", Open: time.Now().Add(-time.Second)},
+		{Ticker: "S-E1-T1", Event: "S-E1", Open: open},
+		{Ticker: "S-E1-T2", Event: "S-E1", Open: open},
+		{Ticker: "S-E1-T3", Event: "S-E1", Open: open.Add(100 * time.Millisecond)},
 	})
-	waitFor(t, 10*time.Second, "two captures to finish", func() bool { return len(rig.captures(t)) == 2 })
+	waitFor(t, 10*time.Second, "the capture to finish", func() bool { return len(rig.captures(t)) == 3 })
 	rig.stop()
 
-	if n := metricValue(t, rig.reg, "opens_skipped_total", "reason", "concurrency"); n != 2 {
-		t.Errorf("skipped for concurrency = %v, want 2", n)
+	if n := v.conns.Load(); n != 1 {
+		t.Fatalf("%d connections for a three-rung event, want 1", n)
 	}
-	if n := metricValue(t, rig.reg, "opens_skipped_total", "reason", "late"); n != 1 {
-		t.Errorf("skipped late = %v, want 1", n)
+	if subs := v.subscriptions(); fmt.Sprint(subs) != "[[S-E1-T1 S-E1-T2 S-E1-T3]]" {
+		t.Errorf("subscriptions %v", subs)
 	}
-	if n := v.conns.Load(); n != 2 {
-		t.Errorf("%d connections, want 2 (the cap)", n)
-	}
-	// Soonest first, ties by ticker: A and B got the slots.
-	got := map[string]bool{}
 	for _, c := range rig.captures(t) {
-		got[c.Market] = c.Complete
-	}
-	if !got["S-A"] || !got["S-B"] || len(got) != 2 {
-		t.Errorf("captured %v, want S-A and S-B, both complete", got)
-	}
-}
-
-// A capture that loses its book mid-window records the hole and is
-// flagged incomplete; the Client resyncs it from a fresh snapshot.
-func TestCaptureRecordsAResync(t *testing.T) {
-	var n atomic.Int32
-	v := &wsVenue{script: func(conn *websocket.Conn, ticker string) {
-		snap := fmt.Sprintf(`{"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":%q}}`, ticker)
-		delta := func(seq int) string {
-			return fmt.Sprintf(`{"type":"orderbook_delta","sid":1,"seq":%d,"msg":{"market_ticker":%q,"price_dollars":"0.4000","delta_fp":"10.00","side":"yes","ts_ms":1794528712733}}`, seq, ticker)
+		if c.Event != "S-E1" || c.Rungs != 3 || c.Events != 3 || c.Resyncs != 0 || !c.Complete {
+			t.Errorf("capture record %+v", c)
 		}
-		conn.WriteMessage(websocket.TextMessage, []byte(snap))
-		if n.Add(1) == 1 {
-			conn.WriteMessage(websocket.TextMessage, []byte(delta(2)))
-			conn.WriteMessage(websocket.TextMessage, []byte(delta(4))) // seq 3 is missing
-			return
+		if end := time.UnixMilli(c.EndMs); end.Before(open.Add(399 * time.Millisecond)) {
+			t.Errorf("%s: capture ended %v after the first open, want the window after the last (400ms)", c.Market, end.Sub(open))
 		}
-		conn.WriteMessage(websocket.TextMessage, []byte(delta(2)))
-	}}
-	rig := startCapturer(t, v, captureConfig(300*time.Millisecond, 2*time.Second, 2))
-	open := time.Now().Add(350 * time.Millisecond)
-	rig.c.Schedule.Update("S", []kalshi.Market{{Ticker: "S-A", Open: open}})
-	waitFor(t, 15*time.Second, "the capture to finish", func() bool { return len(rig.captures(t)) == 1 })
-	rig.stop()
-
-	cap := rig.captures(t)[0]
-	if cap.Resyncs != 1 || cap.Complete {
-		t.Errorf("capture record %+v, want 1 resync and incomplete", cap)
 	}
 	recs, err := storage.ReadJSONL[EventRecord](filepath.Join(rig.dir, "events", "S", open.UTC().Format("2006-01-02")+".jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var shape []string
+	seqs := map[string][]int64{}
 	for _, r := range recs {
-		shape = append(shape, strings.TrimSuffix(fmt.Sprintf("%s/%d/%s", r.Type, r.Seq, r.Stale), "/"))
+		seqs[r.Market] = append(seqs[r.Market], r.Seq)
+		if r.Type == "delta" && r.Side == "yes" && (r.Bid == nil || *r.Bid != 3600 || *r.Ask != 4400 || *r.BidSz != 25000) {
+			t.Errorf("%s two-sided record: %+v", r.Market, r)
+		}
 	}
-	want := "[snapshot/1 delta/2 delta/4/seq_gap snapshot/1 delta/2]"
+	if fmt.Sprint(seqs) != "map[S-E1-T1:[1 4 7] S-E1-T2:[2 5 8] S-E1-T3:[3 6 9]]" {
+		t.Errorf("seqs by market %v", seqs)
+	}
+	if n := metricValue(t, rig.reg, "opens_captures_total"); n != 1 {
+		t.Errorf("opens_captures_total = %v, want 1 (connections)", n)
+	}
+	if n := metricValue(t, rig.reg, "opens_captured_markets_total"); n != 3 {
+		t.Errorf("opens_captured_markets_total = %v, want 3", n)
+	}
+}
+
+// max_concurrent counts connections. An event past the cap is skipped
+// whole, never in part, and so is one that comes due after it opened.
+func TestCaptureSkipsWholeEvents(t *testing.T) {
+	v := &wsVenue{script: func(conn *websocket.Conn, tickers []string) {
+		for i, tk := range tickers {
+			wsSend(conn, wsSnap(i+1, tk))
+		}
+	}}
+	rig := startCapturer(t, v, captureConfig(300*time.Millisecond, 200*time.Millisecond, 2))
+	open := time.Now().Add(350 * time.Millisecond)
+	var ms []kalshi.Market
+	// Three events of three rungs each opening together, and one that
+	// opened a second ago: nine markets due, two connections allowed.
+	for _, e := range []string{"S-E1", "S-E2", "S-E3"} {
+		for _, r := range []string{"-A", "-B", "-C"} {
+			ms = append(ms, kalshi.Market{Ticker: e + r, Event: e, Open: open})
+		}
+	}
+	ms = append(ms, kalshi.Market{Ticker: "S-OLD-A", Event: "S-OLD", Open: time.Now().Add(-time.Second)},
+		kalshi.Market{Ticker: "S-OLD-B", Event: "S-OLD", Open: time.Now().Add(-time.Second)})
+	rig.c.Schedule.Update("S", ms)
+	waitFor(t, 10*time.Second, "two events to finish", func() bool { return len(rig.captures(t)) == 6 })
+	rig.stop()
+
+	if n := metricValue(t, rig.reg, "opens_skipped_total", "reason", "concurrency"); n != 3 {
+		t.Errorf("skipped for concurrency = %v, want 3 (one event of three rungs)", n)
+	}
+	if n := metricValue(t, rig.reg, "opens_skipped_total", "reason", "late"); n != 2 {
+		t.Errorf("skipped late = %v, want 2", n)
+	}
+	if n := v.conns.Load(); n != 2 {
+		t.Errorf("%d connections, want 2 (the cap)", n)
+	}
+	// Soonest first, ties by event: E1 and E2 got the slots, whole.
+	byEvent := map[string]int{}
+	for _, c := range rig.captures(t) {
+		byEvent[c.Event]++
+		if !c.Complete {
+			t.Errorf("%s incomplete", c.Market)
+		}
+	}
+	if fmt.Sprint(byEvent) != "map[S-E1:3 S-E2:3]" {
+		t.Errorf("captured rungs by event %v, want E1 and E2 whole and nothing of E3", byEvent)
+	}
+}
+
+// A gap in the shared seq loses every rung at once: each record shows
+// the hole, each rung is flagged incomplete, and the resync brings a
+// fresh snapshot for each.
+func TestCaptureResyncMarksEveryRung(t *testing.T) {
+	var n atomic.Int32
+	v := &wsVenue{script: func(conn *websocket.Conn, tickers []string) {
+		a, b := tickers[0], tickers[1]
+		wsSend(conn, wsSnap(1, a), wsSnap(2, b))
+		if n.Add(1) == 1 {
+			wsSend(conn, wsDelta(3, a, "yes", "0.4000", "10.00"), wsDelta(5, a, "yes", "0.4100", "10.00")) // seq 4 is missing
+			return
+		}
+		wsSend(conn, wsDelta(3, b, "yes", "0.2000", "10.00"))
+	}}
+	rig := startCapturer(t, v, captureConfig(300*time.Millisecond, 2*time.Second, 2))
+	open := time.Now().Add(350 * time.Millisecond)
+	rig.c.Schedule.Update("S", []kalshi.Market{{Ticker: "S-E-A", Event: "S-E", Open: open}, {Ticker: "S-E-B", Event: "S-E", Open: open}})
+	waitFor(t, 15*time.Second, "the capture to finish", func() bool { return len(rig.captures(t)) == 2 })
+	rig.stop()
+
+	for _, c := range rig.captures(t) {
+		if c.Resyncs != 1 || c.Complete {
+			t.Errorf("capture record %+v, want 1 resync and incomplete", c)
+		}
+	}
+	recs, err := storage.ReadJSONL[EventRecord](filepath.Join(rig.dir, "events", "S", open.UTC().Format("2006-01-02")+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shape := map[string][]string{}
+	for _, r := range recs {
+		shape[r.Market] = append(shape[r.Market], strings.TrimSuffix(fmt.Sprintf("%s/%d/%s", r.Type, r.Seq, r.Stale), "/"))
+	}
+	want := "map[S-E-A:[snapshot/1 delta/3 delta/5/seq_gap snapshot/1] S-E-B:[snapshot/2 stale/0/seq_gap snapshot/2 delta/3]]"
 	if fmt.Sprint(shape) != want {
-		t.Errorf("records %v, want %s", shape, want)
+		t.Errorf("records\n got %v\nwant %s", shape, want)
 	}
-	if n := metricValue(t, rig.reg, "opens_capture_resyncs_total", "reason", "seq_gap"); n != 1 {
-		t.Errorf("seq_gap resyncs = %v, want 1", n)
+	if n := metricValue(t, rig.reg, "opens_capture_resyncs_total", "reason", "seq_gap"); n != 2 {
+		t.Errorf("seq_gap resyncs = %v, want 2 (one per rung)", n)
+	}
+	if n := v.conns.Load(); n != 2 {
+		t.Errorf("%d connections, want 2 (the capture and its resync)", n)
 	}
 }
 

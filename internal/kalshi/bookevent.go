@@ -29,6 +29,10 @@ type Level struct {
 type BookEvent struct {
 	Type string // EventSnapshot, EventDelta or EventStale
 
+	// Market is the market ticker the event is about. On a multi-market
+	// subscription (EventClient) it is what tells the events apart.
+	Market string
+
 	Seq     int64     // the message's seq; 0 for EventStale
 	Recv    time.Time // when the reader read it off the socket
 	VenueMs int64     // the venue's ts_ms; 0 if the message had none (snapshots)
@@ -67,18 +71,39 @@ func (f *Feed) Event() (ev BookEvent, ok bool) {
 	if json.Unmarshal(f.raw, &env) != nil {
 		return BookEvent{}, false
 	}
+	if ev, ok = decodeBookEvent(env); !ok {
+		return BookEvent{}, false
+	}
+	ev.Recv, ev.VenueMs = f.recv, f.stampMs
+	if f.synced {
+		ev.setTop(&f.book)
+	} else {
+		ev.Stale, ev.StaleReason = true, f.reason
+	}
+	return ev, true
+}
+
+// decodeBookEvent fills in what a snapshot or delta message says on its
+// own: its type, seq, market and payload. ok is false for any other
+// message type. Fields that fail to parse are left zero: the feed
+// handling the message has rejected it and marked the book stale.
+func decodeBookEvent(env envelope) (ev BookEvent, ok bool) {
 	switch env.Type {
 	case "orderbook_snapshot":
 		ev.Type = EventSnapshot
 		var msg snapshotMsg
 		if json.Unmarshal(env.Msg, &msg) == nil {
+			ev.Market = msg.MarketTicker
 			ev.Yes, ev.No = sortedLevels(msg.YesDollarsFP), sortedLevels(msg.NoDollarsFP)
 		}
 	case "orderbook_delta":
 		ev.Type = EventDelta
-		var msg deltaMsg
+		var msg struct {
+			deltaMsg
+			TsMs int64 `json:"ts_ms"`
+		}
 		if json.Unmarshal(env.Msg, &msg) == nil {
-			ev.Side = msg.Side
+			ev.Market, ev.Side, ev.VenueMs = msg.MarketTicker, msg.Side, msg.TsMs
 			if p, ok := parseBps(msg.PriceDollars); ok {
 				ev.PriceBps = p
 			}
@@ -87,14 +112,14 @@ func (f *Feed) Event() (ev BookEvent, ok bool) {
 	default:
 		return BookEvent{}, false
 	}
-	ev.Seq, ev.Recv, ev.VenueMs = env.Seq, f.recv, f.stampMs
-	if f.synced {
-		ev.BidBps, ev.BidSize, ev.HasBid = f.book.BestBid()
-		ev.AskBps, ev.AskSize, ev.HasAsk = f.book.BestAsk()
-	} else {
-		ev.Stale, ev.StaleReason = true, f.reason
-	}
+	ev.Seq = env.Seq
 	return ev, true
+}
+
+// setTop records b's best bid and ask on the event.
+func (ev *BookEvent) setTop(b *Book) {
+	ev.BidBps, ev.BidSize, ev.HasBid = b.BestBid()
+	ev.AskBps, ev.AskSize, ev.HasAsk = b.BestAsk()
 }
 
 // sortedLevels parses a snapshot side into levels sorted by price. A
