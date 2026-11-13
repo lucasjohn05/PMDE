@@ -599,19 +599,26 @@ func (r *REST) Candlesticks(ctx context.Context, series, ticker string, from, to
 		path = "/historical/markets/" + url.PathEscape(ticker) + "/candlesticks"
 	}
 	var out struct {
-		Candlesticks []struct {
-			EndPeriodTS int64    `json:"end_period_ts"`
-			YesBid      ohlcWire `json:"yes_bid"`
-			YesAsk      ohlcWire `json:"yes_ask"`
-			VolumeFP    string   `json:"volume_fp"`
-			Volume      string   `json:"volume"`
-		} `json:"candlesticks"`
+		Candlesticks []candleWire `json:"candlesticks"`
 	}
 	if err := r.get(ctx, path, q, &out); err != nil {
 		return nil, err
 	}
-	candles := make([]Candle, 0, len(out.Candlesticks))
-	for _, w := range out.Candlesticks {
+	return decodeCandles(out.Candlesticks), nil
+}
+
+// candleWire is one candlestick as either endpoint sends it.
+type candleWire struct {
+	EndPeriodTS int64    `json:"end_period_ts"`
+	YesBid      ohlcWire `json:"yes_bid"`
+	YesAsk      ohlcWire `json:"yes_ask"`
+	VolumeFP    string   `json:"volume_fp"`
+	Volume      string   `json:"volume"`
+}
+
+func decodeCandles(ws []candleWire) []Candle {
+	candles := make([]Candle, 0, len(ws))
+	for _, w := range ws {
 		c := Candle{End: w.EndPeriodTS}
 		c.BidOpen, c.BidClose, c.HasBid = w.YesBid.parse()
 		c.AskOpen, c.AskClose, c.HasAsk = w.YesAsk.parse()
@@ -623,5 +630,52 @@ func (r *REST) Candlesticks(ctx context.Context, series, ticker string, from, to
 		candles = append(candles, c)
 	}
 	slices.SortFunc(candles, func(a, b Candle) int { return int(a.End - b.End) })
-	return candles, nil
+	return candles
+}
+
+// Limits of GET /markets/candlesticks, as documented: at most 100
+// tickers a request, and at most 10,000 candlesticks in a response
+// across all of them.
+const (
+	BatchCandleTickers = 100
+	BatchCandleTotal   = 10000
+)
+
+// BatchCandlesticks fetches the candles of several markets over one
+// window in one request (GET /markets/candlesticks), by ticker. All the
+// markets share the window, so it suits the rungs of an event, which
+// open together. Tickers Kalshi does not know, and markets with no
+// candles in the window, are absent from the result.
+//
+// The caller keeps within the documented limits: at most
+// BatchCandleTickers tickers, and few enough that tickers x candles in
+// the window stays under BatchCandleTotal. It serves markets the live
+// endpoints still have, not ones settled before the historical cutoff.
+func (r *REST) BatchCandlesticks(ctx context.Context, tickers []string, from, to time.Time, periodMinutes int) (map[string][]Candle, error) {
+	if len(tickers) == 0 {
+		return nil, nil
+	}
+	if len(tickers) > BatchCandleTickers {
+		return nil, fmt.Errorf("kalshi: GET /markets/candlesticks: %d tickers, at most %d a request", len(tickers), BatchCandleTickers)
+	}
+	q := url.Values{
+		"market_tickers":  {strings.Join(tickers, ",")},
+		"start_ts":        {strconv.FormatInt(from.Unix(), 10)},
+		"end_ts":          {strconv.FormatInt(to.Unix(), 10)},
+		"period_interval": {strconv.Itoa(periodMinutes)},
+	}
+	var out struct {
+		Markets []struct {
+			MarketTicker string       `json:"market_ticker"`
+			Candlesticks []candleWire `json:"candlesticks"`
+		} `json:"markets"`
+	}
+	if err := r.get(ctx, "/markets/candlesticks", q, &out); err != nil {
+		return nil, err
+	}
+	byTicker := make(map[string][]Candle, len(out.Markets))
+	for _, m := range out.Markets {
+		byTicker[m.MarketTicker] = decodeCandles(m.Candlesticks)
+	}
+	return byTicker, nil
 }

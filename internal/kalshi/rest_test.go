@@ -308,3 +308,36 @@ func TestCandlesticksBothShapes(t *testing.T) {
 		t.Errorf("historical candle %+v", c)
 	}
 }
+
+// The batch candlestick response is from a live call (November 2026):
+// one entry per known market, unknown tickers left out.
+func TestBatchCandlesticks(t *testing.T) {
+	var got string
+	r, _ := testREST(t, func(w http.ResponseWriter, req *http.Request) {
+		got = req.URL.Path + "?" + req.URL.RawQuery
+		fmt.Fprint(w, `{"markets":[{"candlesticks":[
+{"end_period_ts":1794322920,"open_interest_fp":"40.00","price":{"previous_dollars":"0.0100"},"volume_fp":"0.00",
+"yes_ask":{"close_dollars":"0.0200","high_dollars":"0.0200","low_dollars":"0.0200","open_dollars":"0.0200"},
+"yes_bid":{"close_dollars":"0.0100","high_dollars":"0.0100","low_dollars":"0.0100","open_dollars":"0.0100"}},
+{"end_period_ts":1794322860,"open_interest_fp":"40.00","price":{"close_dollars":"0.0100"},"volume_fp":"40.00",
+"yes_ask":{"close_dollars":"0.0200","high_dollars":"0.9900","low_dollars":"0.0200","open_dollars":"0.9900"},
+"yes_bid":{"close_dollars":"0.0100","high_dollars":"0.0200","low_dollars":"0.0000","open_dollars":"0.0000"}}],
+"market_ticker":"KXHIGHNY-26NOV11-T66"}]}`)
+	})
+	from := time.Unix(1794322800, 0)
+	cs, err := r.BatchCandlesticks(context.Background(), []string{"KXHIGHNY-26NOV11-T66", "NOPE-X"}, from, from.Add(5*time.Minute), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "/markets/candlesticks?") || !strings.Contains(got, "market_tickers=KXHIGHNY-26NOV11-T66%2CNOPE-X") ||
+		!strings.Contains(got, "start_ts=1794322800") || !strings.Contains(got, "end_ts=1794323100") || !strings.Contains(got, "period_interval=1") {
+		t.Errorf("request %q", got)
+	}
+	c := cs["KXHIGHNY-26NOV11-T66"]
+	if len(cs) != 1 || len(c) != 2 || c[0].End != 1794322860 || c[0].BidClose != 100 || c[0].AskClose != 200 || !c[0].TwoSided() || c[0].VolumeCenti != 4000 {
+		t.Errorf("candles %+v (want them sorted by time)", cs)
+	}
+	if _, err := r.BatchCandlesticks(context.Background(), make([]string, 101), from, from, 1); err == nil {
+		t.Errorf("no error for 101 tickers")
+	}
+}

@@ -12,9 +12,19 @@
 // reads those rows and prints, per series, a table ranked by score
 // (miscalibration x modal opening size x opens per day), and writes the
 // same table as CSV to <data-dir>/opens/report.csv. It reads no network.
+//
+//	pmde-opens series -data-dir data -frequency hourly,daily > candidates.txt
+//	pmde-opens triage -data-dir data -series-file candidates.txt -min-quoted-share 0.5 -out opens.yaml
+//
+// are the cheap first pass. series lists candidate series from the
+// latest series snapshot (fetching one if there is none); triage reads
+// their opening minutes from Kalshi's candlesticks and prints one line
+// per series, and can write the ones that pass as a scanner config.
+// Neither needs a key or captures.
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -22,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,13 +51,17 @@ func main() {
 		backfill(os.Args[2:])
 	case "report":
 		report(os.Args[2:])
+	case "triage":
+		triage(os.Args[2:])
+	case "series":
+		series(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n(-h after either for its flags)")
+	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n       pmde-opens triage [flags]\n       pmde-opens series [flags]\n(-h after any of them for its flags)")
 	os.Exit(2)
 }
 
@@ -158,5 +173,157 @@ func noteFees(fees *opens.Fees, reps []opens.SeriesReport) {
 	}
 	if len(missing) > 0 {
 		log.Printf("no fee for %d series (not in the snapshot with a fee_type, or a fee type with no formula here), so no net edge: %v", len(missing), missing)
+	}
+}
+
+func triage(args []string) {
+	fs := flag.NewFlagSet("triage", flag.ExitOnError)
+	seriesFlag := fs.String("series", "", "series tickers to triage, comma-separated")
+	seriesFile := fs.String("series-file", "", "file of series tickers, one per line (what `pmde-opens series` prints); \"-\" for stdin")
+	dataDir := fs.String("data-dir", "data", "data directory; fetched rows are kept in its opens/triage.jsonl, so a rerun fetches only what is new")
+	sinceFlag := fs.String("since", "", "take markets settled since this UTC date, YYYY-MM-DD (default: Kalshi's historical cutoff, as far back as these endpoints reach)")
+	horizon := fs.Duration("horizon", 10*time.Minute, "how long after a market's open to look for its opening quote")
+	sample := fs.Int("sample-events", 20, "events per series whose candles are read, evenly spaced over the period; -1 for every event")
+	minShare := fs.Float64("min-quoted-share", -1, "if 0 or more: write the series with at least this share (0-1) of opens quoted two-sided in the first minute to -out, as a scanner config")
+	outPath := fs.String("out", "opens-triage.yaml", "where -min-quoted-share writes the config")
+	kalshiAPI := fs.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base")
+	fs.Parse(args)
+
+	var list []string
+	for _, s := range strings.Split(*seriesFlag, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			list = append(list, s)
+		}
+	}
+	if *seriesFile != "" {
+		f := os.Stdin
+		if *seriesFile != "-" {
+			var err error
+			if f, err = os.Open(*seriesFile); err != nil {
+				log.Fatal(err)
+			}
+			defer f.Close()
+		}
+		fromFile, err := opens.ReadSeriesList(f)
+		if err != nil {
+			log.Fatalf("%s: %v", *seriesFile, err)
+		}
+		list = append(list, fromFile...)
+	}
+	list, err := opens.ReadSeriesList(strings.NewReader(strings.Join(list, "\n"))) // validates and dedupes
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(list) == 0 {
+		log.Fatal("no series: give -series A,B or -series-file FILE")
+	}
+	var since time.Time
+	if *sinceFlag != "" {
+		if since, err = time.Parse("2006-01-02", *sinceFlag); err != nil {
+			log.Fatalf("-since: %v", err)
+		}
+	}
+	if *horizon < time.Minute || *horizon > 2*time.Hour {
+		log.Fatal("-horizon must be between 1m and 2h")
+	}
+	if *minShare > 1 {
+		log.Fatal("-min-quoted-share is a share between 0 and 1")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	t := &opens.Triage{
+		REST:         &kalshi.REST{Base: *kalshiAPI, Logf: log.Printf},
+		Dir:          filepath.Join(*dataDir, "opens"),
+		Series:       list,
+		Since:        since,
+		Horizon:      *horizon,
+		SampleEvents: *sample,
+		Logf:         log.Printf,
+	}
+	rows, runErr := t.Run(ctx)
+	opens.SortTriage(rows)
+	out := bufio.NewWriter(os.Stdout)
+	if err := opens.WriteTriage(out, rows); err != nil {
+		log.Fatal(err)
+	}
+	out.Flush()
+	if runErr != nil {
+		// What was fetched is on file; the table above covers the series
+		// reached. No allowlist from a partial run.
+		log.Fatalf("stopped after %d of %d series: %v", len(rows), len(list), runErr)
+	}
+	if *minShare < 0 {
+		return
+	}
+	passing := opens.Passing(rows, *minShare)
+	note := fmt.Sprintf("%d of %d series triaged on %s had at least %.0f%% of their sampled opens\nquoted two-sided within the first minute.",
+		len(passing), len(list), time.Now().UTC().Format("2006-01-02"), *minShare*100)
+	f, err := os.Create(*outPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := opens.WriteAllowlist(f, passing, note); err != nil {
+		f.Close()
+		log.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("wrote %s: %d of %d series", *outPath, len(passing), len(list))
+}
+
+func series(args []string) {
+	fs := flag.NewFlagSet("series", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "data", "data directory; the series snapshots are under its opens/series")
+	freq := fs.String("frequency", "", "only series with one of these frequencies, comma-separated (Kalshi's values: fifteen_min, hourly, daily, weekly, monthly, quarterly, annual, one_off, custom); empty for all")
+	fetch := fs.Bool("fetch", false, "fetch a fresh snapshot of Kalshi's series list first (done anyway if there is none)")
+	tickersOnly := fs.Bool("tickers-only", false, "print the ticker alone, without the frequency and title")
+	kalshiAPI := fs.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base")
+	fs.Parse(args)
+
+	var freqs []string
+	for _, f := range strings.Split(*freq, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			freqs = append(freqs, f)
+		}
+	}
+	dir := filepath.Join(*dataDir, "opens")
+	list, day, err := opens.Candidates(dir, freqs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *fetch || day == "" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		// The scanner's own series poll: it writes the day's snapshot
+		// and, if there was an earlier one, logs the series that are
+		// new, exactly as pmde-scan would.
+		d := &opens.Discovery{REST: &kalshi.REST{Base: *kalshiAPI, Logf: log.Printf}, Dir: dir, Logf: log.Printf}
+		if err := d.Load(); err != nil {
+			log.Fatal(err)
+		}
+		if err := d.PollSeries(ctx); err != nil {
+			log.Fatal(err)
+		}
+		if list, day, err = opens.Candidates(dir, freqs); err != nil {
+			log.Fatal(err)
+		}
+	}
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	// Comments and the trailing fields are ignored by triage's
+	// -series-file, so this output can be fed straight to it.
+	fmt.Fprintf(out, "# %d series from the %s snapshot", len(list), day)
+	if len(freqs) > 0 {
+		fmt.Fprintf(out, ", frequency %s", strings.Join(freqs, " or "))
+	}
+	fmt.Fprintln(out)
+	for _, s := range list {
+		if *tickersOnly {
+			fmt.Fprintln(out, s.Ticker)
+		} else {
+			fmt.Fprintf(out, "%s\t%s\t%s\n", s.Ticker, s.Frequency, s.Title)
+		}
 	}
 }

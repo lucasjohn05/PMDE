@@ -32,7 +32,8 @@ Kalshi REST ──> pmde-opens backfill ──> opens/backfill.jsonl ──> pmd
 | 1. Discovery | `internal/kalshi/rest.go`, `internal/opens/discovery.go`, `schedule.go` | `pmde-scan` |
 | 2. Open capture | `internal/kalshi/multifeed.go`, `eventclient.go`, `bookevent.go`, `internal/opens/capture.go` | `pmde-scan` |
 | 3. Settlement backfill | `internal/opens/backfill.go` | `pmde-opens backfill` |
-| 4. Analysis | `internal/opens/report.go`, `reporttext.go` | `pmde-opens report` |
+| 4. Analysis | `internal/opens/report.go`, `calibration.go`, `fees.go`, `reporttext.go` | `pmde-opens report` |
+| Triage | `internal/opens/triage.go` | `pmde-opens series`, `pmde-opens triage` |
 
 What is reused rather than duplicated: the capture uses the same
 `Book`, `Queue`, backoff and drop-and-mark-stale rule as `cmd/pmde`.
@@ -112,6 +113,64 @@ scan stop scan`. Alloy does not scrape `:9101` yet; add a scrape target
 next to the `:9100` one in `deploy/monitoring/config.alloy` to get the
 `opens_*` series into Grafana.
 
+## Triage: choosing what to scan
+
+Triage is a cheap first pass over many series, to pick the allowlist.
+It needs no key and no captures, only Kalshi's public REST API.
+
+```
+# candidate series from the latest series snapshot, by frequency
+# (fetches a snapshot if the data directory has none)
+./pmde-opens series -data-dir data -frequency hourly,daily > candidates.txt
+
+# one line per series; the ones that pass go to a ready-to-use config
+./pmde-opens triage -data-dir data -series-file candidates.txt \
+  -min-quoted-share 0.5 -out opens-triage.yaml
+```
+
+`series` prints `ticker<TAB>frequency<TAB>title`, one series a line,
+under a `#` comment. `-fetch` takes a fresh snapshot first; it runs the
+scanner's own series poll, so on a scanner's data directory it logs new
+series just as `pmde-scan` would. `triage` takes `-series A,B`, a
+`-series-file` in that format (only the first field of a line is read;
+`-` is stdin), or both.
+
+Per series, triage prints:
+
+| Column | Meaning |
+|---|---|
+| opens/day, events/day | Markets settled in the period, and the events they belong to, per UTC day over the span of their open times. |
+| sampled | Markets whose candles were read. |
+| quoted 1m | Share of sampled opens with a two-sided quote at the close of the 1-minute candle ending within 60s of `open_time`: is anyone making the open? |
+| quoted | The same within the whole horizon (`-horizon`, default 10m). |
+| spread | Median opening spread, bps. |
+| fit rmse | Median RMSE of the normal-CDF fit across an event's rungs, and the events fitted. |
+
+How it stays cheap:
+
+- **Counts come from the full listing** of the series' settled
+  markets; **candles from a sample** of whole events, evenly spaced over
+  the period (`-sample-events`, default 20; `-1` for all). A series
+  with thousands of markets costs about what one with dozens does.
+- **One request per event.** `GET /markets/candlesticks` returns the
+  candles of up to 100 markets over one window, and an event's rungs
+  share a window.
+- **Rows are kept** in `opens/triage.jsonl`, so a rerun, or a run that
+  was stopped, fetches only what is new. They are candle-only by design
+  (no trades, no sizes) and separate from `backfill.jsonl`.
+
+`-since` defaults to Kalshi's historical cutoff, which is as far back as
+the live endpoints triage uses reach. `-min-quoted-share X` writes the
+series with at least that share (0 to 1) quoted in the first minute to
+`-out` as a complete scanner config: the allowlist plus every other
+setting at its default. Nothing is written if the run was cut short.
+
+Limits to keep in mind: every number is from 1-minute candle closes, so
+"quoted in the first minute" is a close, not the first quote; markets
+that do not open on a minute boundary have a first candle shorter than
+a minute, which pushes that share down; and a series whose listing
+passes 200,000 markets is counted on what was listed (marked `+`).
+
 ## Config (`opens.yaml`)
 
 | Key | Default | Meaning |
@@ -133,12 +192,13 @@ starting set of daily weather ladders, not a recommendation.
 
 | File | Written by | Contents |
 |---|---|---|
-| `series/<YYYY-MM-DD>.jsonl` | scan | Kalshi's whole series list, once per UTC day (about 16,000 series, 3MB). |
+| `series/<YYYY-MM-DD>.jsonl` | scan, `series` | Kalshi's whole series list, once per UTC day (about 16,000 series, 4MB), with each series' frequency, `fee_type` and `fee_multiplier`. |
 | `new_series.jsonl` | scan | One line per series that was in no earlier snapshot. |
 | `events.jsonl` | scan | The events of scheduled markets: title, `mutually_exclusive`. |
 | `events/<series>/<YYYY-MM-DD>.jsonl` | scan | Captured book events; the day is the market's open day (UTC). |
 | `captures.jsonl` | scan | One line per captured market: counts, resyncs, `rungs` sharing its connection, `complete`. |
 | `backfill.jsonl` | backfill | One row per market. Rewritten atomically each run. |
+| `triage.jsonl` | triage | Candle-only rows for the events triage sampled. |
 | `report.csv` | report | The ranked table. |
 
 A book event record (an illustrative delta; the field names are the
