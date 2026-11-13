@@ -39,6 +39,10 @@ type Feed struct {
 	recv    time.Time
 	stampMs int64
 
+	// raw is the message the last HandleQueued or Next call handled, nil
+	// if it handled none; see Event.
+	raw []byte
+
 	// Top of book as of the last time Handle reported a change.
 	bidBps, askBps int
 	bestOK         bool
@@ -113,6 +117,7 @@ func (f *Feed) HandleQueued(m Queued) (changed bool, err error) {
 		f.lag, f.hasLag = m.Recv.Sub(time.UnixMilli(f.venueMs)), true
 	}
 	f.recv, f.stampMs = m.Recv, f.venueMs
+	f.raw = m.Raw
 	return changed, errors.Join(dropErr, err)
 }
 
@@ -158,6 +163,7 @@ func (f *Feed) Stamp() (recv time.Time, venueMs int64) {
 func (f *Feed) Next(q *Queue) (changed, ok bool, err error) {
 	f.lag, f.hasLag = 0, false
 	f.recv, f.stampMs = time.Time{}, 0
+	f.raw = nil
 	total := q.Drops()
 	select {
 	case m, open := <-q.Messages():

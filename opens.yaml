@@ -1,0 +1,33 @@
+# Open scanner config: which Kalshi series' market opens pmde-scan
+# records, and which series pmde-opens backfills and reports on.
+# See docs/open-scanner.md.
+
+# The allowlist: series tickers, as in Kalshi's URLs and market tickers.
+# These are a starting set of daily ladder series (several strikes per
+# event, a new event every day); edit freely.
+series:
+  - KXHIGHNY
+  - KXHIGHCHI
+  - KXHIGHMIA
+  - KXHIGHAUS
+
+# Also record series that first appear in Kalshi's series list after
+# the scanner's first snapshot, for new_series_days after they're seen,
+# the most recent max_new_series of them.
+include_new_series: true
+new_series_days: 14
+max_new_series: 100
+
+# Subscribe this long before a market's open_time, and record until this
+# long after it.
+lead: 5s
+window: 60s
+
+# Captures (one websocket connection each) running at once. Opens past
+# the cap are skipped and counted in opens_skipped_total.
+max_concurrent: 50
+
+# How often to poll the watched series' unopened markets, and the
+# series list.
+market_poll: 1m
+series_poll: 15m

@@ -74,6 +74,13 @@ type Client struct {
 	// resync).
 	OnTick func(tick.Tick)
 
+	// OnEvent, if set, is called with every orderbook snapshot and delta
+	// the session handles, and whenever the book is lost without a
+	// message to show for it (see BookEvent). The open scanner records
+	// these. Like OnTick it runs on the book goroutine (or on Run's,
+	// between sessions), so a slow OnEvent backs up the queue.
+	OnEvent func(BookEvent)
+
 	// Logf receives operational log lines. Nil discards them.
 	Logf func(format string, args ...any)
 
@@ -117,6 +124,11 @@ func (c *Client) Run(ctx context.Context) {
 		// shows up in reconnects_total only.
 		if hadBook {
 			c.Metrics.Resync(reason)
+			// A book that went stale was reported from the book
+			// goroutine; one lost with its connection is reported here.
+			if reason == ReasonReconnect && c.OnEvent != nil {
+				c.OnEvent(BookEvent{Type: EventStale, Recv: time.Now(), Stale: true, StaleReason: reason})
+			}
 		}
 
 		if time.Since(start) >= healthyAfter {
@@ -257,6 +269,17 @@ func (c *Client) runBook(q *Queue, conn *websocket.Conn, synced *atomic.Bool, st
 		}
 		if lag, ok := f.Lag(); ok {
 			c.Metrics.ObserveLag(lag)
+		}
+		if c.OnEvent != nil {
+			ev, ok := f.Event()
+			if !ok && !wasStale && f.Stale() {
+				// Went stale with no message behind it: the reader
+				// dropped one and the feed then went quiet.
+				ev, ok = BookEvent{Type: EventStale, Recv: time.Now(), Stale: true, StaleReason: f.StaleReason()}, true
+			}
+			if ok {
+				c.OnEvent(ev)
+			}
 		}
 
 		switch {

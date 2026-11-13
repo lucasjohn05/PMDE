@@ -184,6 +184,28 @@ func (b *Book) BestYes() (bidBps, askBps int, ok bool) {
 	return yesHigh, 10000 - noHigh, true
 }
 
+// BestBid returns the highest yes price with resting size and the size
+// there. Unlike BestYes it does not need the other side: ok is false
+// only if there are no yes bids.
+func (b *Book) BestBid() (bps int, size int64, ok bool) {
+	p, ok := highestNonZero(b.yes)
+	if !ok {
+		return 0, 0, false
+	}
+	return p, b.yes[p], true
+}
+
+// BestAsk returns the lowest yes ask (10000 minus the highest no price
+// with resting size) and the no size that makes it. ok is false only if
+// there are no no bids.
+func (b *Book) BestAsk() (bps int, size int64, ok bool) {
+	p, ok := highestNonZero(b.no)
+	if !ok {
+		return 0, 0, false
+	}
+	return 10000 - p, b.no[p], true
+}
+
 // LastSeq returns the seq of the last message successfully applied.
 func (b *Book) LastSeq() int64 {
 	return b.lastSeq

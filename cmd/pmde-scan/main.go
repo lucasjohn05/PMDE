@@ -1,0 +1,98 @@
+// Command pmde-scan is the open scanner's recorder: it watches Kalshi
+// for markets about to open in the configured series (and in newly
+// listed series), and records each one's order book from a few seconds
+// before its open_time until a minute after, under <data-dir>/opens.
+// It records only; it has no order-placing code.
+//
+//	KALSHI_KEY_PATH=... KALSHI_KEY_ID=... pmde-scan -config opens.yaml -data-dir data
+//
+// cmd/pmde-opens backfills results and reports on what it recorded.
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sync"
+	"syscall"
+
+	"github.com/lucasjohn05/pmde/internal/kalshi"
+	"github.com/lucasjohn05/pmde/internal/metrics"
+	"github.com/lucasjohn05/pmde/internal/opens"
+)
+
+const kalshiURL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
+
+func main() {
+	configPath := flag.String("config", "opens.yaml", "open scanner config (YAML)")
+	dataDir := flag.String("data-dir", "data", "data directory; the scanner writes under its opens/ subdirectory")
+	metricsAddr := flag.String("metrics-addr", ":9101", "address to serve Prometheus /metrics on")
+	kalshiAPI := flag.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base")
+	flag.Parse()
+
+	cfg, err := opens.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	keyPath, keyID := os.Getenv("KALSHI_KEY_PATH"), os.Getenv("KALSHI_KEY_ID")
+	if keyPath == "" || keyID == "" {
+		log.Fatalf("KALSHI_KEY_PATH and KALSHI_KEY_ID must be set")
+	}
+	privKey, err := kalshi.LoadPrivateKey(keyPath)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	reg := metrics.NewRegistry()
+	m := metrics.NewOpens(reg)
+	addr, err := metrics.Serve(ctx, *metricsAddr, reg, log.Printf)
+	if err != nil {
+		log.Fatalf("metrics: %v", err)
+	}
+	log.Printf("metrics: serving http://%s/metrics", addr)
+
+	dir := filepath.Join(*dataDir, "opens")
+	schedule := opens.NewSchedule()
+	discovery := &opens.Discovery{
+		REST:     &kalshi.REST{Base: *kalshiAPI, Logf: log.Printf, OnResponse: m.RESTResponse},
+		Dir:      dir,
+		Cfg:      cfg,
+		Schedule: schedule,
+		Metrics:  m,
+		Logf:     log.Printf,
+	}
+	if err := discovery.Load(); err != nil {
+		log.Fatal(err)
+	}
+	recorder := opens.NewRecorder(dir, m, log.Printf)
+	capturer := &opens.Capturer{
+		URL:      kalshiURL,
+		Header:   func() (http.Header, error) { return kalshi.SignedHeader(privKey, keyID) },
+		Cfg:      cfg,
+		Schedule: schedule,
+		Recorder: recorder,
+		Dir:      dir,
+		Metrics:  m,
+		Logf:     log.Printf,
+	}
+	log.Printf("scanning %d allowlisted series (new series: %v); subscribing %v before each open, recording %v after, at most %d at once; storing to %s",
+		len(cfg.Series), cfg.IncludeNewSeries, cfg.Lead, cfg.Window, cfg.MaxConcurrent, dir)
+
+	recorderDone := make(chan struct{})
+	go func() {
+		defer close(recorderDone)
+		recorder.Run(ctx)
+	}()
+	var wg sync.WaitGroup
+	wg.Go(func() { discovery.Run(ctx) })
+	wg.Go(func() { capturer.Run(ctx) })
+	wg.Wait()
+	<-recorderDone // the recorder flushes and closes its files on the way out
+}
