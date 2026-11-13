@@ -122,6 +122,42 @@ groups by series, repeats at most every 30 days, and keeps firing for
 15 minutes across scrape gaps, so a scanner restart does not send it
 again.
 
+## The bad-maker alert
+
+`pmde-opens badmakers` runs every day after the backfill (same cron
+line) and evaluates every series with backfilled opens over the
+trailing `bad_maker.window_days` (30). A series is a **candidate** when
+all of these hold, each threshold set under `bad_maker` in `opens.yaml`:
+
+| # | Condition | Default | How it is measured |
+|---|---|---|---|
+| 1 | Quoted | 70% | Of the captured opens in the window, the share with an opening quote under the quote rule. Only captures have sizes, so candle-sourced opens are not counted either way. |
+| 2 | Capacity | 200 | Median daily capacity in contracts (the report's `cap/day`). |
+| 3 | One maker, one script | 70% | The share of captured opening quotes that are exactly the most common bid size, ask size and spread together. |
+| 4 | Events | 30 | Settled events (not rungs) with an opening quote. |
+| 5 | Wrong | | Either the **net edge** is above zero and so is its lower bound, the 90% interval's low end of the miscalibration less the null, half the median spread and the fee; or the **wing test**: of the rungs whose opening mid was under 10c or over 90c, more settled against their opening price (a low rung yes, a high one no) than the top of the `wing_interval` (90%) interval of that count for calibrated quotes. The interval comes from the same event simulation as the null (one draw per event). |
+
+The run prints one line per series with the numbers behind each
+condition, and writes `opens/bad_makers.json` (every series) and, for
+each candidate notified, a line in `opens/bad_maker_flags.jsonl`.
+
+**Notification.** A candidate is notified when it is first flagged, and
+again after `notify_every_days` (7) if it is still a candidate. Its
+alert fires from the notification until a day before the next one may
+go out, then resolves with no email, so a renewed notification is a new
+email: at most one per series per week. pmde-scan reads
+`bad_makers.json` every minute and exposes the candidates as
+`opens_bad_maker_alert_until_timestamp_seconds{series,title,thresholds}`
+(when the alert stops) and `opens_bad_maker_stat{series,title,thresholds,stat}`
+(the numbers). Grafana's rule `pmde-bad-maker` fires while the first
+is ahead of now, and its email has the ticker, title, the rule, every
+condition's number and the event count. It goes to the
+`pmde-bad-maker-email` contact point, which sends no "resolved" email.
+
+`pmde-opens badmakers -test-candidate` adds a made-up candidate,
+`TEST-BAD-MAKER`, to check that the email arrives. The next run drops
+it.
+
 ## Running it
 
 ```
@@ -138,6 +174,10 @@ KALSHI_KEY_PATH=/path/to/key.pem KALSHI_KEY_ID=<key id> \
 # the ranked table, plus data/opens/report.csv (reads fees.yaml for the
 # net edge and opens.yaml for the quote rule; -seed fixes the bootstrap)
 ./pmde-opens report -config opens.yaml -data-dir data -deciles
+
+# the bad-maker evaluation over the trailing 30 days (fees.yaml for the
+# net edge); writes data/opens/bad_makers.json
+./pmde-opens badmakers -config opens.yaml -data-dir data
 ```
 
 On the droplet the scanner is a second service in `deploy/compose.yaml`,
@@ -164,11 +204,13 @@ docker compose -f deploy/compose.yaml --profile scan run --rm \
 
 The backfill takes the `series` and `backfill_only` lists. It is
 incremental, so it runs from root's crontab on the
-droplet once a day, at 06:30 UTC, away from the 15:00Z burst of opens.
-`flock` keeps a slow run from overlapping the next one:
+droplet once a day, at 06:30 UTC, away from the 15:00Z burst of opens,
+followed by the bad-maker evaluation, which runs even if the backfill
+failed part way (`;`). `flock` keeps a slow run from overlapping the
+next one:
 
 ```
-30 6 * * * cd /opt/pmde && flock -n /run/pmde-backfill.lock docker compose -f deploy/compose.yaml --profile scan run --rm -T --entrypoint /usr/local/bin/pmde-opens scan backfill -config /etc/pmde/opens.yaml -data-dir /data >> /var/log/pmde-backfill.log 2>&1
+30 6 * * * cd /opt/pmde && flock -n /run/pmde-backfill.lock sh -c 'C="docker compose -f deploy/compose.yaml --profile scan run --rm -T --entrypoint /usr/local/bin/pmde-opens scan"; $C backfill -config /etc/pmde/opens.yaml -data-dir /data; $C badmakers -config /etc/pmde/opens.yaml -data-dir /data -fees /etc/pmde/fees.yaml' >> /var/log/pmde-backfill.log 2>&1
 ```
 
 `-T` because cron has no terminal. The first run takes the default 30
@@ -266,6 +308,7 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | `series_poll` | `15m` | Poll interval for the series list. |
 | `quote.max_spread_bps` | 1000 | Widest spread that is a quote. See "What counts as a quote". |
 | `quote.min_size` | 10 | Fewest contracts at a price, each side, that make a quote. |
+| `bad_maker.*` | see "The bad-maker alert" | `window_days` 30, `min_quoted_share` 0.7, `min_median_capacity` 200, `min_modal_share` 0.7, `min_events` 30, `wing_interval` 0.9, `notify_every_days` 7 (at least 2). |
 
 Unknown keys are errors. The checked-in allowlist (55 series: 48 daily
 temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD, KXWTI,
@@ -288,6 +331,8 @@ because 50 of those events open at the same instant (15:00Z daily).
 | `backfill.jsonl` | backfill | One row per market. Rewritten atomically each run. |
 | `triage.jsonl` | triage | Candle-only rows for the events triage sampled. |
 | `report.csv` | report | The ranked table. |
+| `bad_makers.json` | badmakers | The latest bad-maker evaluation of every series. Rewritten atomically each run. |
+| `bad_maker_flags.jsonl` | badmakers | One line per candidate notification. |
 
 A book event record (an illustrative delta; the field names are the
 real ones):
@@ -333,11 +378,12 @@ built before its market's capture existed is rebuilt once.
 | `opens_poll_errors_total{kind}` | Polls that failed after retries. |
 | `opens_writer_blocked_seconds_total` | Book goroutines blocked on the recorder's queue. |
 | `opens_new_series_quoted{series,title,market,bid,ask,bid_size,ask_size,spread_bps}` | A new series' first qualifying quote; the value is its Unix time. See "The new-series alert". |
+| `opens_bad_maker_alert_until_timestamp_seconds{series,title,thresholds}`, `opens_bad_maker_stat{series,title,thresholds,stat}` | Bad-maker candidates from the last `badmakers` run, and their numbers. See "The bad-maker alert". |
 
-Apart from `opens_new_series_quoted`, they carry no market or series
-label: the scanner touches thousands of short-lived markets, and
-per-market series would grow without bound. That one has a series per
-new series quoted, for 14 days.
+Apart from `opens_new_series_quoted` and the bad-maker pair, they
+carry no market or series label: the scanner touches thousands of short-lived markets, and
+per-market series would grow without bound. Those have a series per new
+series quoted (for 14 days) and per candidate.
 
 ## The report's columns
 
@@ -596,8 +642,8 @@ when checked).
 - No trade channel capture: first trades come from REST afterwards.
 - No persistence of the schedule: it is rebuilt from a poll at startup,
   so an open within the first poll after a restart can be missed.
-- No dashboard panels for the `opens_*` metrics, and no alert on them
-  apart from the new-series one (they are scraped).
+- No dashboard panels for the `opens_*` metrics, and no alerts on them
+  apart from the new-series and bad-maker ones (they are scraped).
 - The series list snapshot is not pruned.
 
 ## Live runs (2026-11-13 UTC)

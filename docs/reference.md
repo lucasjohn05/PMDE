@@ -893,7 +893,8 @@ query was checked against the stack.
 **Alerts.** `deploy/monitoring/alerts.yaml` is an export, in
 provisioning-file format, of what's set up in the stack:
 - The rule group `pmde` in folder PMDE, evaluated every 1m.
-- The `pmde-email` contact point.
+- The `pmde-email` contact point, and `pmde-bad-maker-email` for the
+  bad-maker alert.
 - The `fomc-2026-12-09-decision` mute timing.
 
 Each rule routes to `pmde-email` itself (per-rule notification settings),
@@ -908,6 +909,7 @@ so the stack's notification policy tree isn't involved.
 | pmde storage blocked | storage blocking more than 1% of the time (5m rate) | 5m |
 | pmde reconnect rate | more than 10 reconnects in the last hour on a market | 15m |
 | pmde droplet disk low | under 15% free on / | 15m |
+| Kalshi bad-maker candidate | `opens_bad_maker_alert_until_timestamp_seconds{job="pmde-scan"} - time() > 0`: the daily `pmde-opens badmakers` run notified a candidate (docs/open-scanner.md). Fires until a day before the series may be notified again, then resolves silently; goes to the `pmde-bad-maker-email` contact point (no resolved emails), with every condition's number in the body | 0s |
 | New Kalshi series quoted | the open scanner's `opens_new_series_quoted{job="pmde-scan"}` exists: a new series got its first qualifying quote (docs/open-scanner.md). Grouped by series, repeats every 30 days at most, keeps firing 15m across scrape gaps, so one email per series | 0s |
 
 A query with no result means healthy, so No Data maps to OK. The absent

@@ -36,6 +36,17 @@ type Opens struct {
 	writerBlocked prometheus.Counter
 
 	newSeriesQuoted *prometheus.GaugeVec
+
+	badMakerUntil *prometheus.GaugeVec
+	badMakerStat  *prometheus.GaugeVec
+}
+
+// BadMaker is a bad-maker candidate as the metrics show it: the
+// alert's labels, how long it fires, and the numbers behind it.
+type BadMaker struct {
+	Series, Title, Thresholds string
+	Until                     time.Time
+	Stats                     map[string]float64
 }
 
 // NewSeriesQuote is a new series' first qualifying quote, as
@@ -106,9 +117,18 @@ func NewOpens(reg prometheus.Registerer) *Opens {
 			Name: "opens_new_series_quoted",
 			Help: "A newly detected series got its first two-sided quote (under the quote rule) within its first new_series_days: the Unix time of the quote, labelled with the series, its title, the market and the quote. One series per new series quoted, kept until the series is no longer new.",
 		}, newSeriesQuoteLabels),
+		badMakerUntil: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "opens_bad_maker_alert_until_timestamp_seconds",
+			Help: "A bad-maker candidate from the last pmde-opens badmakers run: the Unix time until which its alert fires (a day before it may be notified again). thresholds is the rule it met.",
+		}, []string{"series", "title", "thresholds"}),
+		badMakerStat: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "opens_bad_maker_stat",
+			Help: "The numbers behind a bad-maker candidate, one series per stat (quoted_share, median_capacity, combo_share, settled_events, net_edge_bps, net_edge_lo_bps, wing_against, ...). Labelled like opens_bad_maker_alert_until_timestamp_seconds, plus stat, so the alert can join them.",
+		}, []string{"series", "title", "thresholds", "stat"}),
 	}
 	reg.MustRegister(o.skipped, o.captures, o.markets, o.active, o.events, o.resyncs, o.scheduled,
-		o.watched, o.newSeries, o.rest, o.pollErrors, o.writerBlocked, o.newSeriesQuoted)
+		o.watched, o.newSeries, o.rest, o.pollErrors, o.writerBlocked, o.newSeriesQuoted,
+		o.badMakerUntil, o.badMakerStat)
 	// Every series that can be alerted on exists from the start.
 	for _, r := range skipReasons {
 		o.skipped.WithLabelValues(r)
@@ -224,6 +244,21 @@ func (o *Opens) SetNewSeriesQuoted(q NewSeriesQuote) {
 func (o *Opens) ForgetNewSeriesQuoted(series string) {
 	if o != nil {
 		o.newSeriesQuoted.DeletePartialMatch(prometheus.Labels{"series": series})
+	}
+}
+
+// SetBadMakers replaces the bad-maker candidates shown.
+func (o *Opens) SetBadMakers(bs []BadMaker) {
+	if o == nil {
+		return
+	}
+	o.badMakerUntil.Reset()
+	o.badMakerStat.Reset()
+	for _, b := range bs {
+		o.badMakerUntil.WithLabelValues(b.Series, b.Title, b.Thresholds).Set(float64(b.Until.UnixMilli()) / 1000)
+		for stat, v := range b.Stats {
+			o.badMakerStat.WithLabelValues(b.Series, b.Title, b.Thresholds, stat).Set(v)
+		}
 	}
 }
 

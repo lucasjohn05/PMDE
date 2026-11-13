@@ -241,3 +241,126 @@ func quantile(xs []float64, q float64) float64 {
 	}
 	return xs[min(int(q*float64(len(xs))), len(xs)-1)]
 }
+
+// WingCal is a series' wing calibration: its rungs whose opening mid was
+// under 10c (low) or over 90c (high), against how they settled. A wing
+// rung settles against its opening price when a low rung resolves yes
+// or a high one no; calibrated quotes do that with probability min(p,
+// 1-p).
+type WingCal struct {
+	// Per side: rungs, the events they belong to, their mean opening mid
+	// (bps) and the share that resolved yes.
+	LowN, LowEvents   int
+	LowMeanBps        float64
+	LowYes            float64
+	HighN, HighEvents int
+	HighMeanBps       float64
+	HighYes           float64
+
+	// Events with any wing rung: the sample size, since one outcome
+	// decides all of an event's rungs.
+	Events int
+
+	// Against is how many wing rungs settled against their opening
+	// price, Expected how many calibrated quotes would, and Lo and Hi
+	// the bounds of the central interval (WingInterval, e.g. 90%) of
+	// that count if the quotes were calibrated, from the same event
+	// simulation as the null. Against > Hi is more often than the price
+	// implies, outside the interval.
+	Against  int
+	Expected float64
+	Lo, Hi   float64
+	Interval float64
+}
+
+// wingSide says which wing an opening mid (a probability) is in: under
+// 10c or over 90c, the complement of nearTheMoney.
+func wingSide(p float64) (low, high bool) {
+	bps := p * 10000
+	return bps < ntmLowBps, bps > ntmHighBps
+}
+
+// wingCalibrate computes a series' WingCal. interval is the central
+// probability of the interval reported (0.9 for 90%). The random
+// numbers are seeded from seed and the series name, apart from the
+// calibration's.
+func wingCalibrate(series string, rows []OpenRow, seed uint64, resamples int, interval float64) WingCal {
+	events := calEvents(rows)
+	w := WingCal{Interval: interval}
+	var lowSum, highSum float64
+	var lowYes, highYes int
+	type wingEvent struct{ rungs []calRung }
+	var wings []wingEvent
+	for _, e := range events {
+		var we wingEvent
+		low, high := false, false
+		for _, g := range e.rungs {
+			l, h := wingSide(g.p)
+			switch {
+			case l:
+				w.LowN++
+				lowSum += g.p
+				low = true
+				if g.yes {
+					lowYes++
+					w.Against++
+				}
+				w.Expected += g.p
+			case h:
+				w.HighN++
+				highSum += g.p
+				high = true
+				if g.yes {
+					highYes++
+				} else {
+					w.Against++
+				}
+				w.Expected += 1 - g.p
+			default:
+				continue
+			}
+			we.rungs = append(we.rungs, g)
+		}
+		if low {
+			w.LowEvents++
+		}
+		if high {
+			w.HighEvents++
+		}
+		if len(we.rungs) > 0 {
+			w.Events++
+			// The simulation needs only the wing rungs: each still
+			// resolves from the event's one draw on its own arc.
+			wings = append(wings, we)
+		}
+	}
+	if w.LowN > 0 {
+		w.LowMeanBps, w.LowYes = lowSum/float64(w.LowN)*10000, float64(lowYes)/float64(w.LowN)
+	}
+	if w.HighN > 0 {
+		w.HighMeanBps, w.HighYes = highSum/float64(w.HighN)*10000, float64(highYes)/float64(w.HighN)
+	}
+	if w.Events == 0 {
+		return w
+	}
+	h := fnv.New64a()
+	h.Write([]byte("wing:" + series))
+	rng := rand.New(rand.NewPCG(seed, h.Sum64()))
+	counts := make([]float64, resamples)
+	for i := range counts {
+		n := 0
+		for _, e := range wings {
+			u := rng.Float64()
+			for _, g := range e.rungs {
+				if yes := g.in(u); yes == (g.p < 0.5) {
+					n++ // a low rung resolving yes, or a high one no
+				}
+			}
+		}
+		counts[i] = float64(n)
+	}
+	slices.Sort(counts)
+	tail := (1 - interval) / 2
+	w.Lo, w.Hi = quantile(counts, tail), quantile(counts, 1-tail)
+	return w
+}

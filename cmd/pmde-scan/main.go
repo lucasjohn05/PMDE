@@ -114,6 +114,34 @@ func main() {
 			}
 		}
 	})
+	wg.Go(func() { showBadMakers(ctx, dir, m) })
 	wg.Wait()
 	<-recorderDone // the recorder flushes and closes its files on the way out
+}
+
+// showBadMakers exposes the candidates of the latest pmde-opens
+// badmakers run (opens/bad_makers.json, written by the daily cron job)
+// as metrics, for the Grafana alert, and keeps them current.
+func showBadMakers(ctx context.Context, dir string, m *metrics.Opens) {
+	var last int64 = -1
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		b, err := opens.LoadBadMakers(dir)
+		switch {
+		case err != nil:
+			log.Printf("bad makers: %v", err)
+		case b.EvaluatedMs != last:
+			last = b.EvaluatedMs
+			m.SetBadMakers(b.Metrics())
+			if n := len(b.Candidates()); n > 0 {
+				log.Printf("bad makers: %d candidate(s) in the evaluation of %s", n, time.UnixMilli(b.EvaluatedMs).UTC().Format(time.RFC3339))
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

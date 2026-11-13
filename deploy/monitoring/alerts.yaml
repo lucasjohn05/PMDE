@@ -1,6 +1,7 @@
 # Grafana-managed alerting for PMDE, exported from the Grafana Cloud stack
 # (provisioning file format): the "pmde" rule group in folder PMDE, the
-# pmde-email contact point, and the Dec 9 2026 FOMC mute timing.
+# pmde-email and pmde-bad-maker-email contact points, and the Dec 9 2026
+# FOMC mute timing.
 #
 # Created through the provisioning API with X-Disable-Provenance, so it
 # stays editable in the Grafana UI. Edits made there aren't reflected here
@@ -308,6 +309,226 @@ groups:
                 - alertname
                 - series
             repeat_interval: 30d
+        - uid: pmde-bad-maker
+          title: Kalshi bad-maker candidate
+          condition: Z
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: opens_bad_maker_alert_until_timestamp_seconds{job="pmde-scan"} - time()
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: B
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="quoted_share"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: B
+            - refId: C
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="median_capacity"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: C
+            - refId: D
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_share"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: D
+            - refId: E
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_bid_size"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: E
+            - refId: F
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_ask_size"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: F
+            - refId: G
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_spread_bps"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: G
+            - refId: H
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="settled_events"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: H
+            - refId: I
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="net_edge_bps"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: I
+            - refId: J
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="net_edge_lo_bps"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: J
+            - refId: K
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_against"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: K
+            - refId: L
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_expected"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L
+            - refId: M
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_hi"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: M
+            - refId: "N"
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="capture_opens"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: "N"
+            - refId: O
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_events"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: O
+            - refId: Z
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: Z
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          keepFiringFor: 15m
+          annotations:
+            description: |-
+                {{ $labels.series }}: {{ $labels.title }}
+                Rule ({{ $labels.thresholds }}), over the last window:
+                1. Qualifying two-sided quote on {{ humanizePercentage $values.B.Value }} of {{ printf "%.0f" $values.N.Value }} captured opens.
+                2. Median daily capacity {{ printf "%.0f" $values.C.Value }} contracts.
+                3. One quote, {{ printf "%g" $values.E.Value }} x {{ printf "%g" $values.F.Value }} contracts {{ printf "%.0f" $values.G.Value }} bps wide, on {{ humanizePercentage $values.D.Value }} of opening quotes.
+                4. {{ printf "%.0f" $values.H.Value }} settled events.
+                5. Net edge {{ printf "%.0f" $values.I.Value }} bps, lower bound {{ printf "%.0f" $values.J.Value }} bps. Wing rungs settling against their opening price: {{ printf "%.0f" $values.K.Value }} against {{ printf "%.1f" $values.L.Value }} expected (interval top {{ printf "%.1f" $values.M.Value }}, {{ printf "%.0f" $values.O.Value }} events).
+            summary: 'Bad-maker candidate: {{ $labels.series }} ({{ $labels.title }}), {{ printf "%.0f" $values.H.Value }} events'
+          labels:
+            service: pmde
+            severity: info
+          isPaused: false
+          notification_settings:
+            receiver: pmde-bad-maker-email
+            group_by:
+                - alertname
+                - series
+            repeat_interval: 30d
 contactPoints:
     - orgId: 1
       name: pmde-email
@@ -318,6 +539,15 @@ contactPoints:
             addresses: <ALERT_EMAIL>
             singleEmail: true
           disableResolveMessage: false
+    - orgId: 1
+      name: pmde-bad-maker-email
+      receivers:
+        - uid: pmde-bad-maker-email
+          type: email
+          settings:
+            addresses: <ALERT_EMAIL>
+            singleEmail: true
+          disableResolveMessage: true
 muteTimes:
     - orgId: 1
       name: fomc-2026-12-09-decision

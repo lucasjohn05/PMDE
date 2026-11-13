@@ -126,3 +126,21 @@ series_poll: 15m
 quote:
   max_spread_bps: 1000
   min_size: 10
+
+# When pmde-opens badmakers (run daily after the backfill) flags a series
+# as a bad-maker candidate, over the trailing window_days: a qualifying
+# quote on at least min_quoted_share of captured opens; median daily
+# capacity of at least min_median_capacity contracts; one size and spread
+# combination on at least min_modal_share of opening quotes; at least
+# min_events settled events; and evidence the quotes are wrong (net edge
+# above zero with its lower bound above zero, or wing rungs settling
+# against their opening price above the wing_interval interval). A series
+# is notified at most once every notify_every_days.
+bad_maker:
+  window_days: 30
+  min_quoted_share: 0.7
+  min_median_capacity: 200
+  min_modal_share: 0.7
+  min_events: 30
+  wing_interval: 0.9
+  notify_every_days: 7

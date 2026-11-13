@@ -22,9 +22,11 @@ type SeriesReport struct {
 
 	// Quoted is the opens with an opening (first two-sided) quote, and
 	// Captured how many of those came from a capture rather than from
-	// 1-minute candlesticks.
-	Quoted   int
-	Captured int
+	// 1-minute candlesticks. CaptureOpens is the opens that were
+	// captured, quoted or not.
+	Quoted       int
+	Captured     int
+	CaptureOpens int
 
 	// QuoteDelayMs is the median time from open_time to the first
 	// two-sided quote, over captured opens when there are any (exact),
@@ -45,6 +47,15 @@ type SeriesReport struct {
 
 	SpreadBps    float64 // median opening spread
 	MedianMidBps float64 // median opening mid
+
+	// The most common opening quote of the captured ones as a whole: bid
+	// size, ask size (hundredths of a contract) and spread (bps)
+	// together, and the share of captured opening quotes that are
+	// exactly it. One maker running one script posts the same quote open
+	// after open.
+	ComboBidSz, ComboAskSz int64
+	ComboSpreadBps         int
+	ComboShare             float64
 
 	// FitRMSEBps is the median, over the events with at least
 	// fitMinRungs quoted rungs, of the RMSE of a normal CDF fitted to
@@ -109,6 +120,10 @@ type SeriesReport struct {
 
 	// Flow is who trades in the capture window.
 	Flow
+
+	// Wing is the calibration of the wing rungs (opening mid under 10c
+	// or over 90c).
+	Wing WingCal
 }
 
 // Flow is the trading in each open's capture window (open_time to the
@@ -189,6 +204,10 @@ type Options struct {
 	// Rule is what counts as an opening quote. A row whose quote does
 	// not meet it counts as unquoted. Zero means DefaultQuoteRule.
 	Rule QuoteRule
+
+	// WingInterval is the central probability of the wing calibration's
+	// interval. Zero means 0.9.
+	WingInterval float64
 }
 
 // DefaultResamples is enough for a 90% interval that is stable to a few
@@ -205,6 +224,9 @@ func Report(rows []OpenRow, opts Options) []SeriesReport {
 	}
 	if opts.Rule == (QuoteRule{}) {
 		opts.Rule = DefaultQuoteRule()
+	}
+	if opts.WingInterval <= 0 || opts.WingInterval >= 1 {
+		opts.WingInterval = 0.9
 	}
 	bySeries := map[string][]OpenRow{}
 	for _, r := range rows {
@@ -251,8 +273,19 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 
 	var exactDelays, candleDelays, spreads, mids, impacts []float64
 	var bidSizes, askSizes []int64
+	type combo struct {
+		bid, ask int64
+		spread   int
+	}
+	combos := map[combo]int{}
 	events := map[string][]OpenRow{}
 	for _, r := range rows {
+		if r.CaptureSeen {
+			rep.CaptureOpens++
+		}
+		if r.Source == SourceCapture && r.Mid != nil && r.BidSz != nil && r.AskSz != nil {
+			combos[combo{*r.BidSz, *r.AskSz, *r.Ask - *r.Bid}]++
+		}
 		if r.Mid != nil {
 			rep.Quoted++
 			spreads = append(spreads, float64(*r.Ask-*r.Bid))
@@ -288,6 +321,18 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 		rep.QuoteDelayMs, rep.QuoteDelayN = median(candleDelays), len(candleDelays)
 	}
 	rep.SpreadBps, rep.MedianMidBps = median(spreads), median(mids)
+	n := 0
+	var best combo
+	for c, k := range combos {
+		n += k
+		if k > combos[best] || k == combos[best] && (c.bid < best.bid || c.bid == best.bid && (c.ask < best.ask || c.ask == best.ask && c.spread < best.spread)) {
+			best = c
+		}
+	}
+	if n > 0 {
+		rep.ComboBidSz, rep.ComboAskSz, rep.ComboSpreadBps = best.bid, best.ask, best.spread
+		rep.ComboShare = float64(combos[best]) / float64(n)
+	}
 	rep.BidSizeMode, rep.BidModeShare = mode(bidSizes)
 	rep.AskSizeMode, rep.AskModeShare = mode(askSizes)
 	rep.ImpactN, rep.ImpactBpsPerContract = len(impacts), median(impacts)
@@ -301,6 +346,7 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	rep.FitEvents, rep.FitRMSEBps = len(rmses), median(rmses)
 
 	rep.Calibration = calibrate(series, rows, opts.Seed, opts.Resamples)
+	rep.Wing = wingCalibrate(series, rows, opts.Seed, opts.Resamples, opts.WingInterval)
 	rep.MiscalLowerBound = rep.CandleCal > 0
 	modalCenti := (rep.BidSizeMode + rep.AskSizeMode) / 2
 	modal := float64(modalCenti) / 100 // contracts

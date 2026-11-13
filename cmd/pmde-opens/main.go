@@ -56,13 +56,15 @@ func main() {
 		triage(os.Args[2:])
 	case "series":
 		series(os.Args[2:])
+	case "badmakers":
+		badmakers(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n       pmde-opens triage [flags]\n       pmde-opens series [flags]\n(-h after any of them for its flags)")
+	fmt.Fprintln(os.Stderr, "usage: pmde-opens backfill [flags]\n       pmde-opens report [flags]\n       pmde-opens badmakers [flags]\n       pmde-opens triage [flags]\n       pmde-opens series [flags]\n(-h after any of them for its flags)")
 	os.Exit(2)
 }
 
@@ -162,6 +164,53 @@ func report(args []string) {
 		log.Fatal(err)
 	}
 	log.Printf("wrote %s", *csvPath)
+}
+
+func badmakers(args []string) {
+	fs := flag.NewFlagSet("badmakers", flag.ExitOnError)
+	configPath := fs.String("config", "opens.yaml", "open scanner config (YAML), for the quote rule and the bad_maker thresholds")
+	dataDir := fs.String("data-dir", "data", "data directory; reads opens/backfill.jsonl, writes opens/bad_makers.json")
+	feesPath := fs.String("fees", "fees.yaml", "fee rates (YAML), for the net edge")
+	seed := fs.Uint64("seed", 1, "seed for the bootstrap and the simulations")
+	resamples := fs.Int("resamples", opens.DefaultResamples, "bootstrap resamples and simulations per series")
+	testCandidate := fs.Bool("test-candidate", false, "add a made-up candidate, TEST-BAD-MAKER, so the alert's email can be checked; the next run drops it")
+	fs.Parse(args)
+
+	cfg := loadConfig(*configPath)
+	dir := filepath.Join(*dataDir, "opens")
+	rows, err := opens.LoadRows(dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fees, err := opens.FeesOrNil(*feesPath, dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	titles, err := opens.SeriesTitles(dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	prev, err := opens.LoadBadMakers(dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	now := time.Now()
+	b := opens.EvaluateBadMakers(rows, now, cfg.BadMaker,
+		opens.Options{Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote}, titles, prev)
+	if *testCandidate {
+		b.Series = append([]opens.BadMakerEval{opens.TestCandidate(now, cfg.BadMaker)}, b.Series...)
+	}
+	if err := opens.WriteBadMakers(os.Stdout, b); err != nil {
+		log.Fatal(err)
+	}
+	if err := opens.SaveBadMakers(dir, b); err != nil {
+		log.Fatal(err)
+	}
+	cands := b.Candidates()
+	log.Printf("wrote %s: %d series evaluated over %d days, %d candidate(s)", filepath.Join(dir, "bad_makers.json"), len(b.Series), cfg.BadMaker.WindowDays, len(cands))
+	for _, e := range cands {
+		log.Printf("CANDIDATE %s (%s): notified %s", e.Series, e.Title, time.UnixMilli(e.NotifiedMs).UTC().Format(time.RFC3339))
+	}
 }
 
 // loadConfig reads the scanner config at path, or returns the defaults

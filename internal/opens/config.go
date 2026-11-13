@@ -60,6 +60,9 @@ type Config struct {
 
 	// Quote is what counts as a two-sided quote, in every command.
 	Quote QuoteRule
+
+	// BadMaker is when pmde-opens badmakers flags a series.
+	BadMaker BadMakerRule
 }
 
 // DefaultConfig is what an empty config file means, except that Series
@@ -75,6 +78,7 @@ func DefaultConfig() Config {
 		MarketPoll:       time.Minute,
 		SeriesPoll:       15 * time.Minute,
 		Quote:            DefaultQuoteRule(),
+		BadMaker:         DefaultBadMakerRule(),
 	}
 }
 
@@ -95,6 +99,15 @@ type configFile struct {
 		MaxSpreadBps *int     `yaml:"max_spread_bps"`
 		MinSize      *float64 `yaml:"min_size"` // contracts
 	} `yaml:"quote"`
+	BadMaker *struct {
+		WindowDays        *int     `yaml:"window_days"`
+		MinQuotedShare    *float64 `yaml:"min_quoted_share"`
+		MinMedianCapacity *float64 `yaml:"min_median_capacity"`
+		MinModalShare     *float64 `yaml:"min_modal_share"`
+		MinEvents         *int     `yaml:"min_events"`
+		WingInterval      *float64 `yaml:"wing_interval"`
+		NotifyEveryDays   *int     `yaml:"notify_every_days"`
+	} `yaml:"bad_maker"`
 }
 
 // LoadConfig reads and validates a scanner config file.
@@ -216,6 +229,48 @@ func ParseConfig(data []byte) (Config, error) {
 				return Config{}, errors.New("quote.min_size must be at least 1 contract")
 			}
 			c.Quote.MinSizeCenti = int64(math.Round(*q.MinSize * 100))
+		}
+	}
+	if b := f.BadMaker; b != nil {
+		r := &c.BadMaker
+		for _, v := range []struct {
+			name     string
+			src      *float64
+			dst      *float64
+			min, max float64
+		}{
+			{"min_quoted_share", b.MinQuotedShare, &r.MinQuotedShare, 0, 1},
+			{"min_median_capacity", b.MinMedianCapacity, &r.MinMedianCapacity, 0, math.Inf(1)},
+			{"min_modal_share", b.MinModalShare, &r.MinModalShare, 0, 1},
+			{"wing_interval", b.WingInterval, &r.WingInterval, 0.5, 0.999},
+		} {
+			if v.src == nil {
+				continue
+			}
+			if *v.src < v.min || *v.src > v.max {
+				return Config{}, fmt.Errorf("bad_maker.%s must be between %v and %v", v.name, v.min, v.max)
+			}
+			*v.dst = *v.src
+		}
+		for _, v := range []struct {
+			name string
+			src  *int
+			dst  *int
+			min  int
+		}{
+			{"window_days", b.WindowDays, &r.WindowDays, 1},
+			{"min_events", b.MinEvents, &r.MinEvents, 1},
+			// The alert fires until a day before the next notification
+			// may go out, so it needs two days at least.
+			{"notify_every_days", b.NotifyEveryDays, &r.NotifyEveryDays, 2},
+		} {
+			if v.src == nil {
+				continue
+			}
+			if *v.src < v.min {
+				return Config{}, fmt.Errorf("bad_maker.%s must be at least %d", v.name, v.min)
+			}
+			*v.dst = *v.src
 		}
 	}
 	if len(c.Series) == 0 && !c.IncludeNewSeries {
