@@ -108,9 +108,12 @@ whose opening quotes come from one market maker running a crude model.
 `pmde-scan` watches for markets about to open and records each one's
 book from a few seconds before its `open_time` to a minute after;
 `pmde-opens backfill` adds how each market settled and its earliest
-prices; `pmde-opens report` ranks series by miscalibration x modal
-opening size x opens per day. It reuses the Kalshi client, book and
-JSONL storage above. See [docs/open-scanner.md](docs/open-scanner.md)
+prices; `pmde-opens report` ranks series by net edge (miscalibration
+beyond its noise floor, less half the spread and the taker fee) x modal
+opening size x opens per day. `pmde-opens triage` is a cheap first pass
+over many series from candlesticks alone, to choose what to scan. It
+reuses the Kalshi book, queue and JSONL storage above; an event's rungs
+share one connection. See [docs/open-scanner.md](docs/open-scanner.md)
 for how to run it and what the Kalshi API did and didn't allow.
 
 ## Status

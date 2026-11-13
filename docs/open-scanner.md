@@ -417,9 +417,11 @@ observed (`testdata/kalshi_open_capture.jsonl` is that session).
 puts every market on one subscription with one `seq` across them. The
 docs say only that seq "counts messages on one subscription"; the
 snapshots-then-interleaved-deltas order was observed on a live
-two-market subscription. Two limits are documented without numbers: a
-per-subscription market limit (error 26) and a command rate limit
-(error 27). A ladder wider than the first would fail to subscribe; the
+two-market subscription and then on live captures of 188 and 300
+markets. Two limits are documented without numbers: a per-subscription
+market limit (error 26) and a command rate limit (error 27). 300
+markets on one subscription was accepted; where the limit is above
+that is not known. A ladder wider than it would fail to subscribe; the
 capture logs the venue's error, retries, and ends incomplete. The
 connection limit is 200 on the lower tiers, shared with `pmde`.
 
@@ -452,10 +454,14 @@ when checked).
   say which underlyings those are, so the fit runs both ways and keeps
   the better. Rungs with `functional`, `custom` or `structured` strikes
   are left out, and events need 3 fitted rungs.
-- Calibration uses yes/no results only (not scalar or void), and
-  treats rungs of one event as independent, which they are not: one
-  event's outcome decides all its rungs. With few events the decile
-  table is noisy; read it by event count, not row count.
+- Calibration uses yes/no results only (not scalar or void). The
+  decile table and miscal count rungs; the interval, the null and the
+  excess treat the event as the unit, since one outcome decides all of
+  an event's rungs. In the null, rungs with no usable strike are
+  assumed to be mutually exclusive alternatives.
+- The net edge prices one taker order of the modal size at the median
+  opening mid, crossing half the median spread. It is a series-level
+  summary, not a simulation of trading each open.
 - Multivariate (combo) markets are excluded everywhere.
 
 ## Not built
@@ -468,16 +474,49 @@ when checked).
 - No Alloy scrape config, dashboard or alerts for the `opens_*` metrics.
 - The series list snapshot is not pruned.
 
-## First live run (2026-11-13 UTC)
+## Live runs (2026-11-13 UTC)
 
-A short run of `pmde-scan` on KXWTI: 30 rungs of one event opened at
-00:30:00Z. With `max_concurrent: 20`, 20 were captured (subscribed about
-4.8s before the open, each with its empty snapshot) and 10 were counted
-as skipped. No order was posted on any of the 20 in the first 60s, so
-their opening quotes come from candlesticks.
+**Per-market capture (before events shared a connection).** A short run
+of `pmde-scan` on KXWTI: 30 rungs of one event opened at 00:30:00Z. With
+`max_concurrent: 20`, 20 were captured (subscribed about 4.8s before
+the open, each with its empty snapshot) and 10 were counted as skipped:
+the partial ladder that event capture now rules out. No order was
+posted on any of the 20 in the first 60s.
 
-`pmde-opens backfill -since 2026-11-06` on KXHIGHNY, KXHIGHCHI and KXWTI
-built 244 rows in a little over two minutes (237 quotes from
-candlesticks, 7 markets with no two-sided quote in the first hour).
-With a week of data and no captured sizes the table is not yet evidence
-of anything; it shows the pipeline produces every column.
+**Event capture.** A run on ten crypto and commodity series with
+`max_concurrent: 4`, through the 04:00:00Z opens. Nine events came due
+at once. Four were captured, one connection each: KXETH (300 rungs),
+KXBTC (188), KXBTCD (188) and KXBTC15M (1). Five were skipped whole,
+304 rungs in all, among them the 300-rung KXETHD ladder. Every captured
+rung was complete: synced before the open, no resyncs, no dropped
+messages. The KXETH record holds seq 1 to 2203 without a gap across its
+300 markets. The single KXBTC15M market produced 72,000 book events in
+its minute (22MB of JSONL), so a busy market costs far more disk than a
+wide quiet ladder.
+
+One thing that run showed about discovery: these series list thousands
+of unopened markets ahead of time (KXETH 7,200), so each market poll is
+several pages per series and ten such series keep the REST client at
+its 2 requests/s. Lengthen `market_poll` if the allowlist is full of
+them.
+
+**Backfill and report.** `pmde-opens backfill -since 2026-11-06` on
+KXHIGHNY, KXHIGHCHI and KXWTI built 244 rows in a little over two
+minutes (237 quotes from candlesticks, 7 markets with no two-sided
+quote in the first hour). With a week of data and no captured sizes the
+table is not yet evidence of anything; it shows the pipeline produces
+every column.
+
+The same rows through the report with the noise floor show why it was
+needed. Raw miscal was 1212 bps (KXHIGHNY, 7 events), 1239 (KXWTI, 5
+events) and 736 (KXHIGHCHI, 7 events). The null for those samples is
+1080, 1466 and 931, so the excess is 132, 0 and 0 bps, and after half
+the spread and the fee the net edge is 0 for all three. A week of
+candle-sourced opens says nothing about these series either way.
+
+**Triage.** `pmde-opens series -frequency hourly,daily` listed 481
+series (80 hourly, 401 daily). `pmde-opens triage` on five of them back
+to the cutoff took 15 seconds: KXHIGHCHI 97% quoted in the first
+minute, KXHIGHNY 92%, KXWTI 60% (99% within ten minutes); two had no
+markets settled since the cutoff. `-min-quoted-share 0.5` wrote the
+three as a config that `pmde-scan` parses.
