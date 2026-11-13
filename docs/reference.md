@@ -908,6 +908,7 @@ so the stack's notification policy tree isn't involved.
 | pmde storage blocked | storage blocking more than 1% of the time (5m rate) | 5m |
 | pmde reconnect rate | more than 10 reconnects in the last hour on a market | 15m |
 | pmde droplet disk low | under 15% free on / | 15m |
+| New Kalshi series quoted | the open scanner's `opens_new_series_quoted{job="pmde-scan"}` exists: a new series got its first qualifying quote (docs/open-scanner.md). Grouped by series, repeats every 30 days at most, keeps firing 15m across scrape gaps, so one email per series | 0s |
 
 A query with no result means healthy, so No Data maps to OK. The absent
 rule fires about 10 to 11 minutes after metrics stop: `up` only goes

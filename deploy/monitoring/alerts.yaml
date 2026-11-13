@@ -12,7 +12,7 @@ apiVersion: 1
 groups:
     - orgId: 1
       name: pmde
-      folder: ""
+      folder: PMDE
       interval: 1m
       rules:
         - uid: pmde-metrics-absent
@@ -263,6 +263,51 @@ groups:
           isPaused: false
           notification_settings:
             receiver: pmde-email
+        - uid: pmde-new-series-quoted
+          title: New Kalshi series quoted
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: opens_new_series_quoted{job="pmde-scan"}
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          keepFiringFor: 15m
+          annotations:
+            description: '{{ $labels.market }}: bid {{ $labels.bid }} x {{ $labels.bid_size }}, ask {{ $labels.ask }} x {{ $labels.ask_size }} contracts, spread {{ $labels.spread_bps }} bps. The series'' first two-sided quote under the quote rule within its first 14 days.'
+            summary: 'New series quoted: {{ $labels.series }} ({{ $labels.title }})'
+          labels:
+            service: pmde
+            severity: info
+          isPaused: false
+          notification_settings:
+            receiver: pmde-email
+            group_by:
+                - alertname
+                - series
+            repeat_interval: 30d
 contactPoints:
     - orgId: 1
       name: pmde-email

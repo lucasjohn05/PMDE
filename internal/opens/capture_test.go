@@ -114,6 +114,7 @@ func wsSend(conn *websocket.Conn, lines ...[]byte) {
 
 type captureRig struct {
 	c    *Capturer
+	m    *metrics.Opens
 	reg  *prometheus.Registry
 	dir  string
 	stop func()
@@ -121,12 +122,14 @@ type captureRig struct {
 	logs []string
 }
 
-// startCapturer runs a Recorder and a Capturer against v.
-func startCapturer(t *testing.T, v *wsVenue, cfg Config) *captureRig {
+// startCapturer runs a Recorder and a Capturer against v. setup, if
+// any, adjusts the Capturer before it runs.
+func startCapturer(t *testing.T, v *wsVenue, cfg Config, setup ...func(*captureRig)) *captureRig {
 	t.Helper()
 	srv := httptest.NewServer(v)
 	rig := &captureRig{reg: prometheus.NewRegistry(), dir: t.TempDir()}
 	m := metrics.NewOpens(rig.reg)
+	rig.m = m
 	logf := func(f string, a ...any) {
 		rig.mu.Lock()
 		rig.logs = append(rig.logs, fmt.Sprintf(f, a...))
@@ -136,6 +139,9 @@ func startCapturer(t *testing.T, v *wsVenue, cfg Config) *captureRig {
 	rig.c = &Capturer{
 		URL: "ws" + strings.TrimPrefix(srv.URL, "http"), Cfg: cfg, Schedule: NewSchedule(),
 		Recorder: recorder, Dir: rig.dir, Metrics: m, Logf: logf,
+	}
+	for _, f := range setup {
+		f(rig)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup

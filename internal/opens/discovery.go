@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lucasjohn05/pmde/internal/kalshi"
@@ -58,13 +59,16 @@ type Discovery struct {
 	Logf     func(format string, args ...any)
 	Now      func() time.Time // nil: time.Now
 
-	known      map[string]bool      // every series ticker seen so far
-	baseline   bool                 // a snapshot exists, so an unknown series is a new one
-	newSeries  map[string]time.Time // newly detected series -> first seen
-	snapDay    string               // UTC day of the last snapshot written
-	lastSeries time.Time            // start of the last successful series poll
-	watched    map[string]bool      // as of the last market poll
-	events     map[string]bool      // event tickers already written to events.jsonl
+	mu sync.Mutex // guards newSeries and newInfo, which NewSeries reads from other goroutines
+
+	known      map[string]bool            // every series ticker seen so far
+	baseline   bool                       // a snapshot exists, so an unknown series is a new one
+	newSeries  map[string]time.Time       // newly detected series -> first seen; guarded by mu
+	newInfo    map[string]NewSeriesRecord // the same series' records; guarded by mu
+	snapDay    string                     // UTC day of the last snapshot written
+	lastSeries time.Time                  // start of the last successful series poll
+	watched    map[string]bool            // as of the last market poll
+	events     map[string]bool            // event tickers already written to events.jsonl
 }
 
 func (d *Discovery) now() time.Time {
@@ -83,7 +87,9 @@ func (d *Discovery) logf(format string, args ...any) {
 // Load restores what earlier runs learned: the latest series snapshot
 // and the new-series log. Call it once before polling.
 func (d *Discovery) Load() error {
-	d.known, d.newSeries = map[string]bool{}, map[string]time.Time{}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.known, d.newSeries, d.newInfo = map[string]bool{}, map[string]time.Time{}, map[string]NewSeriesRecord{}
 	d.watched, d.events = map[string]bool{}, map[string]bool{}
 
 	names, err := filepath.Glob(filepath.Join(d.Dir, seriesDir, "*.jsonl"))
@@ -110,6 +116,7 @@ func (d *Discovery) Load() error {
 	for _, r := range recs {
 		d.known[r.Ticker] = true
 		d.newSeries[r.Ticker] = time.UnixMilli(r.T)
+		d.newInfo[r.Ticker] = r
 	}
 	evs, err := storage.ReadJSONL[kalshi.Event](filepath.Join(d.Dir, eventsMetaFile))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -200,13 +207,25 @@ func (d *Discovery) PollSeries(ctx context.Context) error {
 		if err := storage.AppendLine(filepath.Join(d.Dir, newSeriesFile), rec); err != nil {
 			return err
 		}
-		d.newSeries[s.Ticker] = start
+		d.mu.Lock()
+		d.newSeries[s.Ticker], d.newInfo[s.Ticker] = start, rec
+		d.mu.Unlock()
 		d.Metrics.NewSeries()
 		d.logf("opens: new series %s (%s; %s, %s)", s.Ticker, s.Title, s.Category, s.Frequency)
 	}
 	d.baseline = true
 	d.lastSeries = start
 	return nil
+}
+
+// NewSeries returns the record of a series detected as new, whenever
+// that was; ok is false for a series that was never new. Safe to call
+// from any goroutine.
+func (d *Discovery) NewSeries(ticker string) (rec NewSeriesRecord, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rec, ok = d.newInfo[ticker]
+	return rec, ok
 }
 
 // Watched is the series whose opens are captured: the allowlist, plus
@@ -224,6 +243,8 @@ func (d *Discovery) Watched() []string {
 			at     time.Time
 		}
 		var recent []seen
+		d.mu.Lock()
+		defer d.mu.Unlock()
 		for ticker, at := range d.newSeries {
 			// A new series' ticker becomes a directory name; one that
 			// isn't safe as one is not captured.

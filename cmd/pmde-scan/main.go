@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/lucasjohn05/pmde/internal/kalshi"
 	"github.com/lucasjohn05/pmde/internal/metrics"
@@ -71,6 +72,10 @@ func main() {
 	if err := discovery.Load(); err != nil {
 		log.Fatal(err)
 	}
+	newQuotes := &opens.NewSeriesQuotes{Dir: dir, For: cfg.NewSeriesFor, Metrics: m, Logf: log.Printf}
+	if err := newQuotes.Load(time.Now()); err != nil {
+		log.Fatal(err)
+	}
 	recorder := opens.NewRecorder(dir, m, log.Printf)
 	capturer := &opens.Capturer{
 		URL:      kalshiURL,
@@ -81,9 +86,12 @@ func main() {
 		Dir:      dir,
 		Metrics:  m,
 		Logf:     log.Printf,
+
+		NewSeries: discovery.NewSeries,
+		NewQuotes: newQuotes,
 	}
-	log.Printf("scanning %d allowlisted series (new series: %v); subscribing %v before each open, recording %v after, at most %d at once; storing to %s",
-		len(cfg.Series), cfg.IncludeNewSeries, cfg.Lead, cfg.Window, cfg.MaxConcurrent, dir)
+	log.Printf("scanning %d allowlisted series (new series: %v); subscribing %v before each open, recording %v after, at most %d at once; quote rule %v; storing to %s",
+		len(cfg.Series), cfg.IncludeNewSeries, cfg.Lead, cfg.Window, cfg.MaxConcurrent, cfg.Quote, dir)
 
 	recorderDone := make(chan struct{})
 	go func() {
@@ -93,6 +101,19 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Go(func() { discovery.Run(ctx) })
 	wg.Go(func() { capturer.Run(ctx) })
+	wg.Go(func() {
+		// New series age out of the alert's metric.
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				newQuotes.Expire(now)
+			}
+		}
+	})
 	wg.Wait()
 	<-recorderDone // the recorder flushes and closes its files on the way out
 }

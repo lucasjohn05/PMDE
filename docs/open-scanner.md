@@ -92,6 +92,36 @@ new-series alert and the bad-maker evaluation. It is `quote` in
   is rebuilt on the next run. The report holds every row to the current
   rule and says how many were built under a different one.
 
+## The new-series alert
+
+When a series detected as new (see Assumptions) gets a two-sided quote
+under the quote rule on any of its markets within its first
+`new_series_days` (14), the scanner raises the alert once per series:
+
+- a log line, `opens: NEW SERIES QUOTED <ticker> (<title>, first seen
+  <time>): <market> bid <price> x <size>, ask <price> x <size>
+  contracts, spread <bps> bps, <seconds> after its open`;
+- a line in `opens/new_series_quotes.jsonl`;
+- the gauge `opens_new_series_quoted`, whose value is the quote's Unix
+  time and whose labels are `series`, `title`, `market`, `bid`, `ask`
+  (cents), `bid_size`, `ask_size` (contracts) and `spread_bps`.
+
+The check runs live in the capture: for a new series still waiting for
+its quote, each rung's full book is rebuilt from the events and held to
+the rule after every one. Only captured opens are seen, so a new series
+with more events opening at once than `max_concurrent` allows can be
+missed. The gauge stays exposed until the series is past its 14 days,
+across restarts (the file is read back at startup), so the alert fires
+once.
+
+Grafana: rule `pmde-new-series-quoted` in the PMDE folder
+(`deploy/monitoring/alerts.yaml`), on `opens_new_series_quoted{job="pmde-scan"}`,
+to the `pmde-email` contact point. Its email subject names the series
+and title, and the body has the market, both sides and the spread. It
+groups by series, repeats at most every 30 days, and keeps firing for
+15 minutes across scrape gaps, so a scanner restart does not send it
+again.
+
 ## Running it
 
 ```
@@ -251,6 +281,7 @@ because 50 of those events open at the same instant (15:00Z daily).
 |---|---|---|
 | `series/<YYYY-MM-DD>.jsonl` | scan, `series` | Kalshi's whole series list, once per UTC day (about 16,000 series, 4MB), with each series' frequency, `fee_type` and `fee_multiplier`. |
 | `new_series.jsonl` | scan | One line per series that was in no earlier snapshot. |
+| `new_series_quotes.jsonl` | scan | A new series' first qualifying quote, one line per series. |
 | `events.jsonl` | scan | The events of scheduled markets: title, `mutually_exclusive`. |
 | `events/<series>/<YYYY-MM-DD>.jsonl` | scan | Captured book events; the day is the market's open day (UTC). |
 | `captures.jsonl` | scan | One line per captured market: counts, resyncs, `rungs` sharing its connection, `complete`. |
@@ -301,9 +332,12 @@ built before its market's capture existed is rebuilt once.
 | `opens_rest_responses_total{code}` | REST responses, retries included; watch `429`. |
 | `opens_poll_errors_total{kind}` | Polls that failed after retries. |
 | `opens_writer_blocked_seconds_total` | Book goroutines blocked on the recorder's queue. |
+| `opens_new_series_quoted{series,title,market,bid,ask,bid_size,ask_size,spread_bps}` | A new series' first qualifying quote; the value is its Unix time. See "The new-series alert". |
 
-They carry no market or series label: the scanner touches thousands of
-short-lived markets, and per-market series would grow without bound.
+Apart from `opens_new_series_quoted`, they carry no market or series
+label: the scanner touches thousands of short-lived markets, and
+per-market series would grow without bound. That one has a series per
+new series quoted, for 14 days.
 
 ## The report's columns
 
@@ -562,8 +596,8 @@ when checked).
 - No trade channel capture: first trades come from REST afterwards.
 - No persistence of the schedule: it is rebuilt from a poll at startup,
   so an open within the first poll after a restart can be missed.
-- No dashboard panels or alerts for the `opens_*` metrics (they are
-  scraped).
+- No dashboard panels for the `opens_*` metrics, and no alert on them
+  apart from the new-series one (they are scraped).
 - The series list snapshot is not pruned.
 
 ## Live runs (2026-11-13 UTC)

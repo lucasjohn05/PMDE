@@ -299,6 +299,12 @@ type Capturer struct {
 	Logf     func(format string, args ...any)
 	Now      func() time.Time // nil: time.Now
 
+	// NewSeries says whether a series was detected as new, and NewQuotes
+	// raises the alert for a new series' first qualifying quote. Either
+	// nil turns the alert off.
+	NewSeries func(series string) (NewSeriesRecord, bool)
+	NewQuotes *NewSeriesQuotes
+
 	mu sync.Mutex // serializes appends to captures.jsonl
 }
 
@@ -358,6 +364,29 @@ type rungState struct {
 	rec              CaptureRecord
 	trusted          bool
 	syncedBeforeOpen bool
+	book             *quoteBook // the full book, kept only while a new-series quote is watched for
+}
+
+// watchNewSeries applies rec to the rung's full book and, if the book is
+// trusted and meets the quote rule, raises the new-series alert. It
+// reports whether the series needs no more watching.
+func (c *Capturer) watchNewSeries(r *rungState, rec EventRecord, s NewSeriesRecord) (done bool) {
+	if r.book == nil {
+		r.book = newQuoteBook()
+	}
+	r.book.apply(rec)
+	if rec.Stale != "" {
+		return false
+	}
+	bid, ask, bidSz, askSz, ok := r.book.best(c.Cfg.Quote.MinSizeCenti)
+	if !ok || !c.Cfg.Quote.Meets(bid, ask, bidSz, askSz) {
+		return false
+	}
+	c.NewQuotes.Quoted(NewSeriesQuote{
+		T: eventMs(rec), Series: s.Ticker, Title: s.Title, DetectedMs: s.T,
+		Market: rec.Market, OpenMs: rec.OpenMs, Bid: bid, Ask: ask, BidSz: bidSz, AskSz: askSz,
+	}, c.now())
+	return true
 }
 
 // capture records the open of one event on one connection.
@@ -374,6 +403,15 @@ func (c *Capturer) capture(ctx context.Context, e EventOpening) {
 			Market: o.Market.Ticker, Series: o.Series, Event: o.Market.Event,
 			OpenMs: o.Market.Open.UnixMilli(), StartMs: start.UnixMilli(), Rungs: len(e.Rungs),
 		}}
+	}
+
+	// A new series still waiting for its first quote is watched: each
+	// rung's full book is kept and checked against the quote rule.
+	var newSeries *NewSeriesRecord
+	if c.NewSeries != nil && c.NewQuotes != nil {
+		if rec, ok := c.NewSeries(e.Series); ok && c.NewQuotes.Want(e.Series) {
+			newSeries = &rec
+		}
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, e.Last().Add(c.Cfg.Window).Sub(start))
@@ -397,9 +435,13 @@ func (c *Capturer) capture(ctx context.Context, e EventOpening) {
 				r.syncedBeforeOpen = true
 			}
 			r.rec.Events++
+			rec := eventRecord(r.o, ev)
+			if newSeries != nil && c.watchNewSeries(r, rec, *newSeries) {
+				newSeries = nil
+			}
 			// ctx, not cctx: the events of the last instant of the
 			// window are still wanted.
-			c.Recorder.Send(ctx, eventRecord(r.o, ev))
+			c.Recorder.Send(ctx, rec)
 		},
 	}
 	client.Run(cctx)

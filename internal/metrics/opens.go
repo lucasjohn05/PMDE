@@ -34,7 +34,22 @@ type Opens struct {
 	rest          *prometheus.CounterVec
 	pollErrors    *prometheus.CounterVec
 	writerBlocked prometheus.Counter
+
+	newSeriesQuoted *prometheus.GaugeVec
 }
+
+// NewSeriesQuote is a new series' first qualifying quote, as
+// opens_new_series_quoted's labels: the alert's email shows them.
+// Prices are formatted cents ("36c"), sizes contracts.
+type NewSeriesQuote struct {
+	Series, Title, Market string
+	Bid, Ask              string
+	BidSize, AskSize      string
+	SpreadBps             int
+	At                    time.Time
+}
+
+var newSeriesQuoteLabels = []string{"series", "title", "market", "bid", "ask", "bid_size", "ask_size", "spread_bps"}
 
 // NewOpens creates the open scanner's metrics and registers them on reg.
 func NewOpens(reg prometheus.Registerer) *Opens {
@@ -87,9 +102,13 @@ func NewOpens(reg prometheus.Registerer) *Opens {
 			Name: "opens_writer_blocked_seconds_total",
 			Help: "Time capture book goroutines spent blocked sending events to the opens writer because its queue was full.",
 		}),
+		newSeriesQuoted: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "opens_new_series_quoted",
+			Help: "A newly detected series got its first two-sided quote (under the quote rule) within its first new_series_days: the Unix time of the quote, labelled with the series, its title, the market and the quote. One series per new series quoted, kept until the series is no longer new.",
+		}, newSeriesQuoteLabels),
 	}
 	reg.MustRegister(o.skipped, o.captures, o.markets, o.active, o.events, o.resyncs, o.scheduled,
-		o.watched, o.newSeries, o.rest, o.pollErrors, o.writerBlocked)
+		o.watched, o.newSeries, o.rest, o.pollErrors, o.writerBlocked, o.newSeriesQuoted)
 	// Every series that can be alerted on exists from the start.
 	for _, r := range skipReasons {
 		o.skipped.WithLabelValues(r)
@@ -189,6 +208,22 @@ func (o *Opens) RESTResponse(status int) {
 func (o *Opens) PollError(kind string) {
 	if o != nil {
 		o.pollErrors.WithLabelValues(kind).Inc()
+	}
+}
+
+// SetNewSeriesQuoted exposes a new series' first qualifying quote.
+func (o *Opens) SetNewSeriesQuoted(q NewSeriesQuote) {
+	if o == nil {
+		return
+	}
+	o.newSeriesQuoted.WithLabelValues(q.Series, q.Title, q.Market, q.Bid, q.Ask, q.BidSize, q.AskSize,
+		strconv.Itoa(q.SpreadBps)).Set(float64(q.At.UnixMilli()) / 1000)
+}
+
+// ForgetNewSeriesQuoted stops exposing series' quote.
+func (o *Opens) ForgetNewSeriesQuoted(series string) {
+	if o != nil {
+		o.newSeriesQuoted.DeletePartialMatch(prometheus.Labels{"series": series})
 	}
 }
 
