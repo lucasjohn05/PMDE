@@ -2,14 +2,68 @@
 # records, and which series pmde-opens backfills and reports on.
 # See docs/open-scanner.md.
 
-# The allowlist: series tickers, as in Kalshi's URLs and market tickers.
-# These are a starting set of daily ladder series (several strikes per
-# event, a new event every day); edit freely.
+# The allowlist, chosen from pmde-opens triage on 2026-11-13 (hourly and
+# daily series back to the 2026-09-13 cutoff; at least 50% of opens quoted
+# two-sided in the first minute, with a real spread, not a 1c/99c stub).
+# 48 daily high/low temperature ladders (6 rungs each). KXHIGHTSDF and
+# KXLOWTSDF settle on Louisville (CLISDF), whatever their titles say.
 series:
-  - KXHIGHNY
-  - KXHIGHCHI
-  - KXHIGHMIA
   - KXHIGHAUS
+  - KXHIGHCHI
+  - KXHIGHDEN
+  - KXHIGHLAX
+  - KXHIGHMIA
+  - KXHIGHNY
+  - KXHIGHPHIL
+  - KXHIGHTATL
+  - KXHIGHTBOS
+  - KXHIGHTDAL
+  - KXHIGHTDC
+  - KXHIGHTEWR
+  - KXHIGHTHOU
+  - KXHIGHTLV
+  - KXHIGHTMIN
+  - KXHIGHTNOLA
+  - KXHIGHTOKC
+  - KXHIGHTPHX
+  - KXHIGHTSAN
+  - KXHIGHTSATX
+  - KXHIGHTSDF
+  - KXHIGHTSEA
+  - KXHIGHTSFO
+  - KXHIGHTTTN
+  - KXLOWTATL
+  - KXLOWTAUS
+  - KXLOWTBOS
+  - KXLOWTCHI
+  - KXLOWTDAL
+  - KXLOWTDC
+  - KXLOWTDEN
+  - KXLOWTEWR
+  - KXLOWTHOU
+  - KXLOWTLAX
+  - KXLOWTLV
+  - KXLOWTMIA
+  - KXLOWTMIN
+  - KXLOWTNOLA
+  - KXLOWTNYC
+  - KXLOWTOKC
+  - KXLOWTPHIL
+  - KXLOWTPHX
+  - KXLOWTSAN
+  - KXLOWTSATX
+  - KXLOWTSDF
+  - KXLOWTSEA
+  - KXLOWTSFO
+  - KXLOWTTTN
+  # gas, earthquakes, oil, FX, Truth Social posts
+  - KXAAAGASD
+  - KXBIGGESTQUAKE
+  - KXBRENTD
+  - KXEURUSD
+  - KXTRUTHSOCIALD
+  - KXUSDJPY
+  - KXWTI
 
 # Also record series that first appear in Kalshi's series list after
 # the scanner's first snapshot, for new_series_days after they're seen,
@@ -26,7 +80,14 @@ window: 60s
 # Captures running at once. A capture is one websocket connection
 # covering all the rungs of one event that open together. An event past
 # the cap is skipped whole and counted in opens_skipped_total.
-max_concurrent: 50
+#
+# The width of an event doesn't count against this (the widest chosen
+# ones are about 33 rungs, KXWTI, on one connection); how many events
+# open at the same instant does. 50 of the chosen series' events open
+# together at 15:00Z daily, so 100 leaves room for new series opening
+# then too. With pmde's 4 connections that is 104 of the 200 Kalshi
+# allows on the lower tiers.
+max_concurrent: 100
 
 # How often to poll the watched series' unopened markets, and the
 # series list.

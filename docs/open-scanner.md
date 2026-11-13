@@ -185,8 +185,11 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | `market_poll` | `1m` | Poll interval for the watched series' unopened markets. |
 | `series_poll` | `15m` | Poll interval for the series list. |
 
-Unknown keys are errors. The four series in the checked-in file are a
-starting set of daily weather ladders, not a recommendation.
+Unknown keys are errors. The checked-in allowlist (55 series: 48 daily
+temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD, KXWTI,
+KXEURUSD, KXUSDJPY and KXTRUTHSOCIALD) was chosen from a triage of all
+481 hourly and daily series on 2026-11-13. `max_concurrent` is 100
+because 50 of those events open at the same instant (15:00Z daily).
 
 ## Files, under `<data-dir>/opens`
 
