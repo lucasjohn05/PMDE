@@ -234,8 +234,8 @@ func TestWriteTextAndCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 3 || len(recs[0]) != 42+30 {
-		t.Fatalf("%d CSV rows of %d columns, want 3 of 72", len(recs), len(recs[0]))
+	if len(recs) != 3 || len(recs[0]) != 48+30 {
+		t.Fatalf("%d CSV rows of %d columns, want 3 of 78", len(recs), len(recs[0]))
 	}
 	col := map[string]int{}
 	for i, h := range recs[0] {

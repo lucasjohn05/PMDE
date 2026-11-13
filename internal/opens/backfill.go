@@ -56,6 +56,19 @@ type OpenRow struct {
 	RuleSpread int   `json:"rule_spread_bps,omitempty"`
 	RuleSize   int64 `json:"rule_min_size,omitempty"`
 
+	// Flow in the capture window, from open_time to FlowWindowMs after
+	// it (the scanner's window when the row was built; a row built with
+	// another is rebuilt). WindowTraded is every contract traded in it,
+	// captured or not; nil if the trades were not read. OpenTraded and
+	// OpenPulled split the opening quote's size (BidSz + AskSz) that
+	// left the book by the end of the window into what was traded
+	// against and what was pulled; the rest was still resting. Captures
+	// only, and nil if the capture lost its book inside the window.
+	FlowWindowMs int64  `json:"flow_window_ms,omitempty"`
+	WindowTraded *int64 `json:"window_traded,omitempty"`
+	OpenTraded   *int64 `json:"open_traded,omitempty"`
+	OpenPulled   *int64 `json:"open_pulled,omitempty"`
+
 	// The first trade within the horizon after the open, if any.
 	TradeMs    int64  `json:"trade_ms,omitempty"`
 	TradePrice *int   `json:"trade_price,omitempty"`
@@ -113,6 +126,10 @@ type Backfill struct {
 	// Rule is what counts as the opening quote. Zero means
 	// DefaultQuoteRule.
 	Rule QuoteRule
+
+	// Window is the flow window after the open: the scanner's capture
+	// window. Zero means DefaultConfig's.
+	Window time.Duration
 
 	Logf func(format string, args ...any)
 
@@ -197,10 +214,13 @@ func (b *Backfill) run(ctx context.Context, rows map[string]OpenRow, captured ma
 	if b.Rule == (QuoteRule{}) {
 		b.Rule = DefaultQuoteRule()
 	}
+	if b.Window <= 0 {
+		b.Window = DefaultConfig().Window
+	}
 	// done reports whether a market's row needs nothing more.
 	done := func(ticker string) bool {
 		r, ok := rows[ticker]
-		if !ok || r.Result == "" || !r.builtUnder(b.Rule) {
+		if !ok || r.Result == "" || !r.builtUnder(b.Rule) || r.FlowWindowMs != b.Window.Milliseconds() {
 			return false
 		}
 		_, hasCapture := captured[ticker]
@@ -317,6 +337,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 		Rung: m.Rung, StrikeType: m.StrikeType, Floor: m.FloorStrike, Cap: m.CapStrike,
 		OpenMs: m.Open.UnixMilli(), Result: m.Result,
 		RuleSpread: b.Rule.MaxSpreadBps, RuleSize: b.Rule.MinSizeCenti,
+		FlowWindowMs: b.Window.Milliseconds(),
 	}
 	if m.HasSettlement && m.Result != "" {
 		row.SettleBps = &m.SettlementBps
@@ -331,14 +352,18 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 	historical := !m.Settled.IsZero() && m.Settled.Before(b.cutoff)
 	end := m.Open.Add(horizon)
 
+	flowEnd := m.Open.Add(b.Window).UnixMilli()
 	var events []EventRecord
+	var open opening
+	var captureQuote bool
 	if hasCapture {
 		row.CaptureSeen = true
 		var err error
 		if events, err = b.events(c.series, m); err != nil {
 			return row, err
 		}
-		if q, ok := openingFromEvents(events, b.Rule); ok {
+		if open, captureQuote = openingFromEvents(events, b.Rule, flowEnd); captureQuote {
+			q := open.quote
 			row.Source, row.QuoteMs = SourceCapture, q.ms
 			row.Bid, row.Ask, row.Mid = &q.bid, &q.ask, ptr(mid(q.bid, q.ask))
 			row.BidSz, row.AskSz = &q.bidSz, &q.askSz
@@ -374,6 +399,17 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 	trades, err := b.REST.Trades(ctx, m.Ticker, m.Open.Add(-time.Second), end, historical)
 	if err != nil && !errors.Is(err, kalshi.ErrPageLimit) {
 		return row, err
+	}
+	var inWindow int64
+	for _, t := range trades {
+		if t.Time.UnixMilli() <= flowEnd {
+			inWindow += t.CountCenti
+		}
+	}
+	row.WindowTraded = &inWindow
+	if captureQuote && open.flowOK {
+		traded, pulled := flowOf(open, trades, flowEnd)
+		row.OpenTraded, row.OpenPulled = &traded, &pulled
 	}
 	if len(trades) == 0 {
 		return row, nil

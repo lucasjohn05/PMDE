@@ -106,6 +106,55 @@ type SeriesReport struct {
 	// captures: contracts and dollars at risk on qualifying quotes, near
 	// the money and in the wings.
 	Capacity
+
+	// Flow is who trades in the capture window.
+	Flow
+}
+
+// Flow is the trading in each open's capture window (open_time to the
+// window after it).
+type Flow struct {
+	// FlowOpens is the opens whose trades were read; TradedOpens how
+	// many of them traded at all in the window, and TradedPerDay the
+	// contracts traded, per UTC day over the span seen.
+	FlowOpens    int
+	TradedOpens  int
+	TradedPerDay float64
+
+	// Of the opening quotes' size (bid + ask, captured opens followed
+	// through the window), the shares that were traded against and that
+	// were pulled by the end of it; the rest was still resting.
+	// QuoteFlowOpens is how many opens that covers.
+	QuoteFlowOpens int
+	TradedShare    float64
+	PulledShare    float64
+}
+
+// flow computes a series' Flow over days UTC days.
+func flow(rows []OpenRow, days int) Flow {
+	var f Flow
+	var traded, size, hit, pulled int64
+	for _, r := range rows {
+		if r.WindowTraded != nil {
+			f.FlowOpens++
+			traded += *r.WindowTraded
+			if *r.WindowTraded > 0 {
+				f.TradedOpens++
+			}
+		}
+		if r.OpenTraded != nil && r.OpenPulled != nil && r.Source == SourceCapture && r.BidSz != nil && r.AskSz != nil {
+			f.QuoteFlowOpens++
+			size += *r.BidSz + *r.AskSz
+			hit, pulled = hit+*r.OpenTraded, pulled+*r.OpenPulled
+		}
+	}
+	if days > 0 {
+		f.TradedPerDay = float64(traded) / 100 / float64(days)
+	}
+	if size > 0 {
+		f.TradedShare, f.PulledShare = float64(hit)/float64(size), float64(pulled)/float64(size)
+	}
+	return f
 }
 
 // Decile is one tenth of the price range: opens whose opening mid fell
@@ -272,6 +321,7 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 		rep.Score, rep.HasScore = rep.NetEdgeBps/10000*modal*rep.OpensPerDay, true
 	}
 	rep.Capacity = capacity(rows)
+	rep.Flow = flow(rows, rep.Days)
 	return rep
 }
 

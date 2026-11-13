@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -67,7 +68,7 @@ func usage() {
 
 func backfill(args []string) {
 	fs := flag.NewFlagSet("backfill", flag.ExitOnError)
-	configPath := fs.String("config", "opens.yaml", "open scanner config (YAML); its series list is what gets backfilled")
+	configPath := fs.String("config", "opens.yaml", "open scanner config (YAML); its series and backfill_only lists are what get backfilled")
 	dataDir := fs.String("data-dir", "data", "data directory; rows go to its opens/backfill.jsonl")
 	sinceFlag := fs.String("since", "", "take the allowlisted series' markets settled since this UTC date, YYYY-MM-DD (default: 30 days ago)")
 	horizon := fs.Duration("horizon", time.Hour, "how long after a market's open to look for its first two-sided quote and first trade")
@@ -93,10 +94,11 @@ func backfill(args []string) {
 	b := &opens.Backfill{
 		REST:    &kalshi.REST{Base: *kalshiAPI, Logf: log.Printf},
 		Dir:     filepath.Join(*dataDir, "opens"),
-		Series:  cfg.Series,
+		Series:  append(slices.Clone(cfg.Series), cfg.BackfillOnly...),
 		Since:   since,
 		Horizon: *horizon,
 		Rule:    cfg.Quote,
+		Window:  cfg.Window,
 		Logf:    log.Printf,
 	}
 	log.Printf("quote rule: %v", cfg.Quote)

@@ -65,6 +65,29 @@ series:
   - KXUSDJPY
   - KXWTI
 
+# Backfilled and reported on, but not captured: the 17 series that passed
+# the 2026-11-13 triage at 50% only on 1c/99c stub books (median opening
+# spread 9400-9800 bps). Their results, opening prices and trades are
+# fetched, so the report's flow columns show whether anyone takes there.
+backfill_only:
+  - KXAAAGASDAZ
+  - KXAAAGASDCA
+  - KXAAAGASDCO
+  - KXAAAGASDCT
+  - KXAAAGASDFL
+  - KXAAAGASDGA
+  - KXAAAGASDIL
+  - KXAAAGASDIN
+  - KXAAAGASDMA
+  - KXAAAGASDMI
+  - KXCS2MAP
+  - KXSOFRD
+  - KXTRUMPACTD
+  - KXTRUMPAPPROVE
+  - KXTRUMPGOLFD
+  - KXTXERCOTPEAKD
+  - KXVHGCB
+
 # Also record series that first appear in Kalshi's series list after
 # the scanner's first snapshot, for new_series_days after they're seen,
 # the most recent max_new_series of them.

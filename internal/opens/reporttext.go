@@ -25,7 +25,7 @@ func na(ok bool, format string, args ...any) string {
 // calibration table under it.
 func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\tcap/day (ntm/wing)\t$risk/day (ntm/wing)\t")
+	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\tcap/day (ntm/wing)\t$risk/day (ntm/wing)\ttraded/day\topens traded\tquote traded/pulled\t")
 	for i, r := range reps {
 		delay := na(r.QuoteDelayN > 0, "%.0fms", r.QuoteDelayMs)
 		if r.QuoteDelayN > 0 && !r.QuoteDelayExact {
@@ -37,7 +37,7 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 		if r.MiscalLowerBound {
 			lb = "≥"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			i+1, r.Series, r.Opens, r.OpensPerDay, r.Quoted, r.Captured, delay,
 			na(r.Sized > 0, "%s", centi(r.BidSizeMode)), na(r.Sized > 0, "%.0f%%", r.BidModeShare*100),
 			na(r.Sized > 0, "%s", centi(r.AskSizeMode)), na(r.Sized > 0, "%.0f%%", r.AskModeShare*100),
@@ -54,7 +54,10 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 			na(r.HasScore, "%s%.2f", lb, r.Score),
 			na(r.HasGross, "%.2f", r.GrossScore),
 			na(r.CapDays > 0, "%.0f (%.0f/%.0f)", r.Contracts, r.NTMContracts, r.WingContracts),
-			na(r.CapDays > 0, "%.0f (%.0f/%.0f)", r.Dollars, r.NTMDollars, r.WingDollars))
+			na(r.CapDays > 0, "%.0f (%.0f/%.0f)", r.Dollars, r.NTMDollars, r.WingDollars),
+			na(r.FlowOpens > 0, "%.0f", r.TradedPerDay),
+			na(r.FlowOpens > 0, "%d/%d", r.TradedOpens, r.FlowOpens),
+			na(r.QuoteFlowOpens > 0, "%.0f%%/%.0f%% (%d)", r.TradedShare*100, r.PulledShare*100, r.QuoteFlowOpens))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -82,6 +85,10 @@ cap/day: contracts resting at the opening quote's bid and ask (both sides, every
 day), on quotes meeting the quote rule; median over days with a captured open. ntm: opening mid 10-90c;
 wing: the rest. $risk/day: the dollars behind them, the maker's collateral (bid x size, (1 - ask) x
 size). From captures only: "-" without any.
+traded/day: contracts traded in the capture window (open_time to the scanner's window after it), per
+UTC day. opens traded: opens with any trade in the window, of those whose trades were read. quote
+traded/pulled: of the opening quotes' size (bid + ask), the share traded against and the share pulled
+by the end of the window (captured opens followed through the window); the rest was still resting.
 `)
 	if !deciles {
 		return nil
@@ -121,7 +128,8 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 		"settled", "cal_events", "cal_from_candles", "miscal_is_lower_bound", "brier",
 		"miscal_bps", "miscal_lo_bps", "miscal_hi_bps", "null_miscal_bps", "excess_miscal_bps",
 		"median_mid_bps", "fee_bps", "fee_size", "net_edge_bps", "score", "gross_score",
-		"cap_days", "cap_contracts", "cap_ntm_contracts", "cap_wing_contracts", "risk_dollars", "risk_ntm_dollars", "risk_wing_dollars"}
+		"cap_days", "cap_contracts", "cap_ntm_contracts", "cap_wing_contracts", "risk_dollars", "risk_ntm_dollars", "risk_wing_dollars",
+		"flow_opens", "traded_opens", "traded_per_day", "quote_flow_opens", "quote_traded_share", "quote_pulled_share"}
 	for d := range 10 {
 		header = append(header, fmt.Sprintf("d%d_n", d), fmt.Sprintf("d%d_mean_mid_bps", d), fmt.Sprintf("d%d_realized", d))
 	}
@@ -153,6 +161,8 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 			f(r.HasNet, r.NetEdgeBps, 1), f(r.HasScore, r.Score, 4), f(r.HasGross, r.GrossScore, 4),
 			strconv.Itoa(r.CapDays), f(r.CapDays > 0, r.Contracts, 2), f(r.CapDays > 0, r.NTMContracts, 2), f(r.CapDays > 0, r.WingContracts, 2),
 			f(r.CapDays > 0, r.Dollars, 2), f(r.CapDays > 0, r.NTMDollars, 2), f(r.CapDays > 0, r.WingDollars, 2),
+			strconv.Itoa(r.FlowOpens), strconv.Itoa(r.TradedOpens), f(r.FlowOpens > 0, r.TradedPerDay, 2),
+			strconv.Itoa(r.QuoteFlowOpens), f(r.QuoteFlowOpens > 0, r.TradedShare, 4), f(r.QuoteFlowOpens > 0, r.PulledShare, 4),
 		}
 		for _, dec := range r.Deciles {
 			row = append(row, strconv.Itoa(dec.N), f(dec.N > 0, dec.MeanBps, 1), f(dec.N > 0, dec.Freq, 4))

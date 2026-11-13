@@ -183,6 +183,10 @@ func TestBackfillFromCandles(t *testing.T) {
 	if r.ImpactSource != SourceCandles || *r.MidBefore != 4000 || *r.MidAfter != 4300 {
 		t.Errorf("impact: %+v", r)
 	}
+	// Both trades are after the 60s window; no capture, so no quote flow.
+	if r.WindowTraded == nil || *r.WindowTraded != 0 || r.OpenTraded != nil {
+		t.Errorf("flow without a capture: %v %v", r.WindowTraded, r.OpenTraded)
+	}
 	if q := rows["S-D1-T60"]; q.Source != "" || q.Bid != nil || q.Result != "yes" || *q.SettleBps != 10000 || q.TradePrice != nil {
 		t.Errorf("market with no two-sided quote: %+v", q)
 	}
@@ -291,6 +295,12 @@ func TestBackfillFromCapture(t *testing.T) {
 	}
 	if r.ImpactSource != SourceCapture || *r.MidBefore != 4000 || *r.MidAfter != 4200 || *r.TradeCount != 3000 {
 		t.Errorf("impact: before %v after %v count %v source %q", r.MidBefore, r.MidAfter, r.TradeCount, r.ImpactSource)
+	}
+	// Flow in the 60s window: 30 traded; the opening ask's other 220
+	// and the whole opening bid were pulled at the reprice.
+	if r.FlowWindowMs != 60000 || r.WindowTraded == nil || *r.WindowTraded != 3000 ||
+		r.OpenTraded == nil || *r.OpenTraded != 3000 || *r.OpenPulled != 47000 {
+		t.Errorf("flow: window %d traded %v open traded %v pulled %v", r.FlowWindowMs, r.WindowTraded, r.OpenTraded, r.OpenPulled)
 	}
 	if r.Result != "" || r.SettleBps != nil {
 		t.Errorf("unsettled market has a result: %+v", r)

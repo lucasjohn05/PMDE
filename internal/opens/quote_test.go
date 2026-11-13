@@ -2,8 +2,13 @@ package opens
 
 import (
 	"context"
+	"fmt"
+	"math"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/lucasjohn05/pmde/internal/kalshi"
 )
 
 func TestQuoteRule(t *testing.T) {
@@ -55,7 +60,7 @@ func TestOpeningUnderTheRule(t *testing.T) {
 		delta(7, 4000, "yes", 4000, 15),
 		delta(8, 4100, "no", 5200, 15),
 	})
-	q, ok := openingFromEvents(events, DefaultQuoteRule())
+	q, ok := openingFromEvents(events, DefaultQuoteRule(), math.MaxInt64)
 	if !ok || q.bid != 4000 || q.ask != 4800 || q.bidSz != 2000 || q.askSz != 2000 || q.ms != bfOpen.UnixMilli()+4100 {
 		t.Errorf("opening %+v, %v; want 40/48c, 20 a side, at +4.1s", q, ok)
 	}
@@ -64,11 +69,11 @@ func TestOpeningUnderTheRule(t *testing.T) {
 		t.Errorf("fixture: best bid %d, want the 45c half contract", b)
 	}
 	// Under a looser rule the stub is the quote.
-	if q, ok := openingFromEvents(events, anyQuote); !ok || q.bid != 100 || q.ask != 9900 {
+	if q, ok := openingFromEvents(events, anyQuote, math.MaxInt64); !ok || q.bid != 100 || q.ask != 9900 {
 		t.Errorf("anyQuote opening %+v, %v; want the stub", q, ok)
 	}
 	// A book never meeting the rule has none.
-	if _, ok := openingFromEvents(events[:6], DefaultQuoteRule()); ok {
+	if _, ok := openingFromEvents(events[:6], DefaultQuoteRule(), math.MaxInt64); ok {
 		t.Errorf("an opening from stubs and 5-lots")
 	}
 }
@@ -178,5 +183,69 @@ func TestRepoOpensConfig(t *testing.T) {
 	}
 	if c.Quote != DefaultQuoteRule() || len(c.Series) == 0 {
 		t.Errorf("opens.yaml: quote %+v, %d series", c.Quote, len(c.Series))
+	}
+}
+
+// The opening quote's size is followed through the window: what left
+// each level, opening size first, split by the trades at its price into
+// traded against and pulled.
+func TestFlowOfTheOpeningQuote(t *testing.T) {
+	events := withTop([]EventRecord{
+		{Type: "snapshot", Seq: 1, RecvMs: bfOpen.UnixMilli() - 4000},
+		delta(2, 100, "yes", 4000, 100),   // bid 40c x100
+		delta(3, 100, "no", 5500, 100),    // ask 45c x100: the quote
+		delta(4, 1000, "no", 5500, 50),    // +50 behind the opening ask
+		delta(5, 2000, "no", 5500, -120),  // 120 leave: 100 of the opening size
+		delta(6, 3000, "yes", 4000, -30),  // 30 of the opening bid leave
+		delta(7, 3000, "yes", 3900, 500),  // a new level: not the quote
+		delta(8, 90000, "yes", 4000, -70), // after the window
+	})
+	o, ok := openingFromEvents(events, DefaultQuoteRule(), bfOpen.Add(time.Minute).UnixMilli())
+	if !ok || !o.flowOK || o.bid != 4000 || o.ask != 4500 || o.bidGone != 3000 || o.askGone != 10000 {
+		t.Fatalf("opening %+v, %v", o, ok)
+	}
+	at := func(ms int64) time.Time { return bfOpen.Add(time.Duration(ms) * time.Millisecond) }
+	trades := []kalshi.Trade{
+		{Time: at(2000), YesBps: 4500, CountCenti: 6000, TakerYes: true},  // lifts the ask: 60
+		{Time: at(2000), YesBps: 4600, CountCenti: 9000, TakerYes: true},  // a different price
+		{Time: at(3000), YesBps: 4000, CountCenti: 5000, TakerYes: false}, // hits the bid: 50, capped at the 30 gone
+		{Time: at(80000), YesBps: 4500, CountCenti: 9000, TakerYes: true}, // after the window
+	}
+	traded, pulled := flowOf(o, trades, bfOpen.Add(time.Minute).UnixMilli())
+	// Ask: 100 gone, 60 traded, 40 pulled. Bid: 30 gone, all traded.
+	if traded != 9000 || pulled != 4000 {
+		t.Errorf("traded %d pulled %d, want 9000 and 4000", traded, pulled)
+	}
+
+	// A hole in the window: the flow is not known.
+	holed := append(slices.Clone(events[:4]), EventRecord{Type: "stale", RecvMs: bfOpen.UnixMilli() + 1500, Stale: "seq_gap"})
+	if o, ok := openingFromEvents(holed, DefaultQuoteRule(), bfOpen.Add(time.Minute).UnixMilli()); !ok || o.flowOK {
+		t.Errorf("hole after the quote: %+v, %v", o, ok)
+	}
+}
+
+func TestReportFlow(t *testing.T) {
+	a := capRow("S", 0, 0, 4000, 5000, 100)
+	a.WindowTraded, a.OpenTraded, a.OpenPulled = int64p(5000), int64p(2000), int64p(8000)
+	b := capRow("S", 1, 1, 4000, 5000, 100)
+	b.WindowTraded, b.OpenTraded, b.OpenPulled = int64p(0), int64p(0), int64p(0)
+	c := quoted("S", "S-E9", "S-9", repOpen+dayMs, 100, 50, "") // a stub, not captured: trades only
+	c.WindowTraded = int64p(15000)
+	r := Report([]OpenRow{a, b, c}, Options{Seed: 1, Resamples: 10})[0]
+	// 200 contracts over 2 days; 2 of 3 opens traded; of 400 contracts
+	// of opening size, 20 traded against and 80 pulled.
+	if r.FlowOpens != 3 || r.TradedOpens != 2 || r.TradedPerDay != 100 || r.QuoteFlowOpens != 2 ||
+		!near(r.TradedShare, 0.05, 1e-12) || !near(r.PulledShare, 0.2, 1e-12) {
+		t.Errorf("flow %+v", r.Flow)
+	}
+}
+
+func TestParseConfigBackfillOnly(t *testing.T) {
+	c, err := ParseConfig([]byte("series: [A]\nbackfill_only: [B, C]\n"))
+	if err != nil || len(c.Series) != 1 || fmt.Sprint(c.BackfillOnly) != "[B C]" {
+		t.Errorf("config %+v, %v", c, err)
+	}
+	if _, err := ParseConfig([]byte("series: [A]\nbackfill_only: [A]\n")); err == nil {
+		t.Errorf("a series in both lists")
 	}
 }

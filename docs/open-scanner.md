@@ -132,7 +132,8 @@ docker compose -f deploy/compose.yaml --profile scan run --rm \
   --entrypoint /usr/local/bin/pmde-opens scan report -config /etc/pmde/opens.yaml -data-dir /data -fees /etc/pmde/fees.yaml -deciles
 ```
 
-The backfill is incremental, so it runs from root's crontab on the
+The backfill takes the `series` and `backfill_only` lists. It is
+incremental, so it runs from root's crontab on the
 droplet once a day, at 06:30 UTC, away from the 15:00Z burst of opens.
 `flock` keeps a slow run from overlapping the next one:
 
@@ -224,6 +225,7 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | Key | Default | Meaning |
 |---|---|---|
 | `series` | none | The allowlist of series tickers. |
+| `backfill_only` | none | Series backfilled and reported on but not captured (no sizes). |
 | `include_new_series` | `true` | Also capture series first seen after the first snapshot. |
 | `new_series_days` | 14 | How long a new series stays watched. |
 | `max_new_series` | 100 | At most this many new series (the most recent). |
@@ -238,7 +240,9 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 Unknown keys are errors. The checked-in allowlist (55 series: 48 daily
 temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD, KXWTI,
 KXEURUSD, KXUSDJPY and KXTRUTHSOCIALD) was chosen from a triage of all
-481 hourly and daily series on 2026-11-13. `max_concurrent` is 100
+481 hourly and daily series on 2026-11-13. `backfill_only` holds the 17
+series that passed that triage only on 1c/99c stub books, for the flow
+columns. `max_concurrent` is 100
 because 50 of those events open at the same instant (15:00Z daily).
 
 ## Files, under `<data-dir>/opens`
@@ -276,7 +280,9 @@ which the book is untrusted, until the next snapshot.
 A backfill row has the market's identity and strike, `open_ms`,
 `source` (`capture` or `candles`), `quote_ms`, `bid`, `ask`, `mid` (bps),
 `bid_sz`, `ask_sz` (the opening quote under the quote rule),
-`rule_spread_bps` and `rule_min_size` (that rule), the first trade (`trade_ms`, `trade_price`,
+`rule_spread_bps` and `rule_min_size` (that rule), the flow
+(`flow_window_ms`, `window_traded`, `open_traded`, `open_pulled`), the
+first trade (`trade_ms`, `trade_price`,
 `trade_count`, `taker_yes`), `mid_before`, `mid_after`, `result`,
 `settle_bps` and `settled_ms`. A row with a `result` is final; a row
 built before its market's capture existed is rebuilt once.
@@ -348,6 +354,23 @@ short-lived markets, and per-market series would grow without bound.
   collateral on those quotes: bid × size on the bid, (1 − ask) × size on
   the ask. It is also the most a taker of the whole quote could win.
   CSV: `risk_dollars`, `risk_ntm_dollars`, `risk_wing_dollars`.
+- **traded/day**: contracts traded in the capture window, from
+  `open_time` to `window` after it, per UTC day over the span seen. From
+  Kalshi's trades, so it is there for every backfilled open, captured or
+  not, stub books included.
+- **opens traded**: opens with at least one trade in the window, of the
+  opens whose trades were read.
+- **quote traded/pulled**: of the opening quotes' size (bid plus ask),
+  the share traded against and the share pulled by the end of the
+  window; the rest was still resting. Captured opens only, followed
+  through the window: the two opening price levels are tracked delta by
+  delta, each taken down opening size first (Kalshi fills a level in
+  time priority) and capped at its opening size, so size added later is
+  not counted. What left a level is "traded" up to the contracts that
+  printed at its price with the taker on the other side (a taker selling
+  yes at the bid, buying yes at the ask) between the quote and the end
+  of the window, and "pulled" for the rest. An open whose capture lost
+  its book in the window is left out. The count of opens is in brackets.
 
 ### The noise floor under miscal
 

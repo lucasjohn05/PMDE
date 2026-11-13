@@ -34,6 +34,11 @@ type Config struct {
 	// captured and whose settled markets are backfilled.
 	Series []string
 
+	// BackfillOnly are series that are backfilled and reported on but
+	// not captured: no sizes, but their results, opening prices and
+	// trades.
+	BackfillOnly []string
+
 	// IncludeNewSeries also captures series first seen within
 	// NewSeriesFor, at most MaxNewSeries of them (the most recent).
 	IncludeNewSeries bool
@@ -77,6 +82,7 @@ func DefaultConfig() Config {
 // a number of days for new_series_days.
 type configFile struct {
 	Series           []string `yaml:"series"`
+	BackfillOnly     []string `yaml:"backfill_only"`
 	IncludeNewSeries *bool    `yaml:"include_new_series"`
 	NewSeriesDays    *int     `yaml:"new_series_days"`
 	MaxNewSeries     *int     `yaml:"max_new_series"`
@@ -107,6 +113,7 @@ func LoadConfig(path string) (Config, error) {
 // ParseConfig parses and validates a scanner config:
 //
 //	series: [KXHIGHNY, KXHIGHCHI]
+//	backfill_only: [KXCS2MAP]
 //	include_new_series: true
 //	new_series_days: 14
 //	max_new_series: 100
@@ -140,6 +147,16 @@ func ParseConfig(data []byte) (Config, error) {
 		}
 		seen[s] = true
 		c.Series = append(c.Series, s)
+	}
+	for _, s := range f.BackfillOnly {
+		switch {
+		case !storage.SafeComponent(s):
+			return Config{}, fmt.Errorf("backfill_only: %q is not a series ticker", s)
+		case seen[s]:
+			return Config{}, fmt.Errorf("series %q is listed twice (in series or backfill_only)", s)
+		}
+		seen[s] = true
+		c.BackfillOnly = append(c.BackfillOnly, s)
 	}
 	if f.IncludeNewSeries != nil {
 		c.IncludeNewSeries = *f.IncludeNewSeries
