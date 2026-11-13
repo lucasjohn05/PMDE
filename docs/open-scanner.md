@@ -107,11 +107,31 @@ docker compose -f deploy/compose.yaml --profile scan run --rm \
   --entrypoint /usr/local/bin/pmde-opens scan report -data-dir /data -fees /etc/pmde/fees.yaml -deciles
 ```
 
-The backfill is incremental, so it can run from cron once a day. To
-stop the scanner alone: `docker compose -f deploy/compose.yaml --profile
-scan stop scan`. Alloy does not scrape `:9101` yet; add a scrape target
-next to the `:9100` one in `deploy/monitoring/config.alloy` to get the
-`opens_*` series into Grafana.
+The backfill is incremental, so it runs from root's crontab on the
+droplet once a day, at 06:30 UTC, away from the 15:00Z burst of opens.
+`flock` keeps a slow run from overlapping the next one:
+
+```
+30 6 * * * cd /opt/pmde && flock -n /run/pmde-backfill.lock docker compose -f deploy/compose.yaml --profile scan run --rm -T --entrypoint /usr/local/bin/pmde-opens scan backfill -config /etc/pmde/opens.yaml -data-dir /data >> /var/log/pmde-backfill.log 2>&1
+```
+
+`-T` because cron has no terminal. The first run takes the default 30
+days of the allowlist, several thousand markets at about three REST
+calls each, so expect it to take a few hours; later runs fetch only
+what settled since. It shares the droplet's IP, and so its rate budget,
+with the scanner's polls; both back off on 429s.
+
+To stop the scanner alone: `docker compose -f deploy/compose.yaml
+--profile scan stop scan`.
+
+Alloy scrapes `127.0.0.1:9101` as `job="pmde-scan"`
+(`prometheus.scrape "pmde_scan"` in `deploy/monitoring/config.alloy`,
+next to the `:9100` one), so the `opens_*` series reach Grafana. To
+change the live copy, which holds the token: back up
+`/etc/alloy/config.alloy`, build the new file in /tmp, install it only
+if `alloy fmt` passes, keep it root:alloy 640, and `systemctl reload
+alloy`. A file that fails to parse is rejected by the reload (Alloy keeps
+running the old config), but would stop Alloy at its next restart.
 
 ## Triage: choosing what to scan
 
@@ -474,7 +494,8 @@ when checked).
 - No trade channel capture: first trades come from REST afterwards.
 - No persistence of the schedule: it is rebuilt from a poll at startup,
   so an open within the first poll after a restart can be missed.
-- No Alloy scrape config, dashboard or alerts for the `opens_*` metrics.
+- No dashboard panels or alerts for the `opens_*` metrics (they are
+  scraped).
 - The series list snapshot is not pruned.
 
 ## Live runs (2026-11-13 UTC)

@@ -173,3 +173,18 @@ prometheus.scrape "pmde" {
   forward_to      = [prometheus.remote_write.metrics_service.receiver]
   scrape_interval = "15s"
 }
+
+// pmde-scan: the open scanner's metrics (opens_skipped_total,
+// opens_captures_*, opens_events_total, opens_capture_resyncs_total,
+// opens_scheduled_markets, opens_rest_responses_total, ...). Like
+// pmde's, they are on the host loopback only (deploy/compose.yaml binds
+// 127.0.0.1:9101 for the scan service).
+prometheus.scrape "pmde_scan" {
+  targets = [{
+    __address__ = "127.0.0.1:9101",
+    instance    = constants.hostname,
+    job         = "pmde-scan",
+  }]
+  forward_to      = [prometheus.remote_write.metrics_service.receiver]
+  scrape_interval = "15s"
+}
