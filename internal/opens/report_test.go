@@ -234,8 +234,8 @@ func TestWriteTextAndCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 3 || len(recs[0]) != 35+30 {
-		t.Fatalf("%d CSV rows of %d columns, want 3 of 65", len(recs), len(recs[0]))
+	if len(recs) != 3 || len(recs[0]) != 42+30 {
+		t.Fatalf("%d CSV rows of %d columns, want 3 of 72", len(recs), len(recs[0]))
 	}
 	col := map[string]int{}
 	for i, h := range recs[0] {
@@ -245,6 +245,9 @@ func TestWriteTextAndCSV(t *testing.T) {
 	if n[col["series"]] != "N" || n[col["rank"]] != "1" || n[col["opens"]] != "14" || n[col["settled"]] != "14" ||
 		n[col["fit_events"]] != "1" || n[col["score"]] != "" || n[col["bid_size_mode"]] != "" || n[col["quote_delay_exact"]] != "false" {
 		t.Errorf("CSV row for N: %v", n)
+	}
+	if n[col["cap_days"]] != "0" || n[col["cap_contracts"]] != "" {
+		t.Errorf("capacity without captures: %v", n)
 	}
 	if q := recs[2]; q[col["series"]] != "Q" || q[col["brier"]] != "" || q[col["spread_bps"]] != "" || q[col["d0_n"]] != "0" {
 		t.Errorf("CSV row for Q: %v", q)

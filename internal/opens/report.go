@@ -101,6 +101,11 @@ type SeriesReport struct {
 	// fees. It overstates, and is kept for comparison.
 	GrossScore float64
 	HasGross   bool
+
+	// Capacity is what the series offers at its opens per day, from
+	// captures: contracts and dollars at risk on qualifying quotes, near
+	// the money and in the wings.
+	Capacity
 }
 
 // Decile is one tenth of the price range: opens whose opening mid fell
@@ -142,7 +147,8 @@ type Options struct {
 const DefaultResamples = 2000
 
 // Report computes one SeriesReport per series in rows, ranked: by Score
-// where there is one, then by net edge x opens per day, then by excess
+// where there is one; the rest, whose score is blank, by median daily
+// capacity; then by net edge x opens per day, then by excess
 // miscalibration x opens per day, then by name.
 func Report(rows []OpenRow, opts Options) []SeriesReport {
 	if opts.Resamples <= 0 {
@@ -167,6 +173,11 @@ func Report(rows []OpenRow, opts Options) []SeriesReport {
 				return -1
 			}
 			return 1
+		}
+		if !a.HasScore {
+			if c := cmp.Compare(b.Contracts, a.Contracts); c != 0 {
+				return c
+			}
 		}
 		return cmp.Or(
 			cmp.Compare(b.Score, a.Score),
@@ -260,6 +271,7 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	if rep.HasNet && rep.Sized > 0 {
 		rep.Score, rep.HasScore = rep.NetEdgeBps/10000*modal*rep.OpensPerDay, true
 	}
+	rep.Capacity = capacity(rows)
 	return rep
 }
 

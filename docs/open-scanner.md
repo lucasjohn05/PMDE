@@ -330,10 +330,24 @@ short-lived markets, and per-market series would grow without bound.
   (contracts, mean of the two sides) × opens per day. Roughly dollars a
   day after costs. It is blank until a series has settled opens,
   captured sizes and a known fee; such series rank below scored ones,
-  by net edge × opens/day, then excess × opens/day.
+  by capacity (`cap/day`), then net edge × opens/day, then excess ×
+  opens/day.
 - **gross** = miscal × modal opening size × opens per day: the score as
   it was first defined, with nothing taken off for the noise floor, the
   spread or fees. Kept for comparison; it overstates.
+- **cap/day (ntm/wing)**: capacity. Per UTC day, the contracts resting
+  at the opening quote's bid and ask (both sides), summed across every
+  rung that opened that day, on quotes that meet the quote rule. Near
+  the money (ntm) is an opening mid from 10c to 90c, the wings the
+  rest. Each figure is the median over the days with a captured open,
+  taken separately, so ntm and wing need not add up to the total. A
+  captured open with no qualifying quote adds nothing to its day.
+  Captures only: blank without any. CSV: `cap_days`, `cap_contracts`,
+  `cap_ntm_contracts`, `cap_wing_contracts`.
+- **$risk/day (ntm/wing)**: the same in dollars at risk, the maker's
+  collateral on those quotes: bid × size on the bid, (1 − ask) × size on
+  the ask. It is also the most a taker of the whole quote could win.
+  CSV: `risk_dollars`, `risk_ntm_dollars`, `risk_wing_dollars`.
 
 ### The noise floor under miscal
 
