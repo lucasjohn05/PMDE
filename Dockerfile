@@ -23,7 +23,7 @@ COPY --from=build /out/pmde /usr/local/bin/pmde
 COPY --from=build /out/pmde-scan /out/pmde-opens /usr/local/bin/
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY pairs.yaml /etc/pmde/pairs.yaml
-COPY opens.yaml /etc/pmde/opens.yaml
+COPY opens.yaml fees.yaml /etc/pmde/
 USER 65532:65532
 VOLUME /data
 # Metrics. Publish it on the host's loopback only (see deploy/).

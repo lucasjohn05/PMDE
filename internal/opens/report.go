@@ -43,7 +43,8 @@ type SeriesReport struct {
 	AskSizeMode  int64
 	AskModeShare float64
 
-	SpreadBps float64 // median opening spread
+	SpreadBps    float64 // median opening spread
+	MedianMidBps float64 // median opening mid
 
 	// FitRMSEBps is the median, over the events with at least
 	// fitMinRungs quoted rungs, of the RMSE of a normal CDF fitted to
@@ -72,13 +73,34 @@ type SeriesReport struct {
 	CandleCal        int
 	MiscalLowerBound bool
 
-	// Score = miscalibration (as a fraction of $1) x modal opening size
+	// FeeBps is the taker fee per contract, in bps, on an order of
+	// FeeSizeCenti at the median opening mid: the modal opening size
+	// when the series has captured sizes, else 100 contracts. HasFee is
+	// false when the series' fee is not known (see Fees).
+	FeeBps       float64
+	FeeSizeCenti int64
+	HasFee       bool
+
+	// NetEdgeBps is what is left of the excess miscalibration after the
+	// cost of taking it: excess - half the median opening spread - the
+	// taker fee at the median opening mid, floored at zero.
+	NetEdgeBps float64
+	HasNet     bool
+
+	// Score = net edge (as a fraction of $1) x modal opening size
 	// (contracts, the mean of the two sides' modes) x opens per day:
-	// roughly the dollars a day a perfectly informed taker of the modal
-	// size could have taken from the opening quotes. HasScore is false
-	// when a factor is missing (no settled opens, or no sizes).
+	// roughly the dollars a day left, after spread and fees, for a taker
+	// of the modal size who knew the true probabilities. HasScore is
+	// false when a factor is missing: no settled opens, no captured
+	// sizes, or no fee.
 	Score    float64
 	HasScore bool
+
+	// GrossScore is the same with the raw miscalibration in place of
+	// the net edge: nothing taken off for the noise floor, the spread or
+	// fees. It overstates, and is kept for comparison.
+	GrossScore float64
+	HasGross   bool
 }
 
 // Decile is one tenth of the price range: opens whose opening mid fell
@@ -105,6 +127,10 @@ type Options struct {
 	// Resamples is how many bootstrap resamples and null simulations
 	// are run per series. Zero means DefaultResamples.
 	Resamples int
+
+	// Fees prices the taker fee for the net edge. Nil leaves the net
+	// figures out.
+	Fees *Fees
 }
 
 // DefaultResamples is enough for a 90% interval that is stable to a few
@@ -112,8 +138,8 @@ type Options struct {
 const DefaultResamples = 2000
 
 // Report computes one SeriesReport per series in rows, ranked: by Score
-// where there is one, then by excess miscalibration x opens per day,
-// then by name.
+// where there is one, then by net edge x opens per day, then by excess
+// miscalibration x opens per day, then by name.
 func Report(rows []OpenRow, opts Options) []SeriesReport {
 	if opts.Resamples <= 0 {
 		opts.Resamples = DefaultResamples
@@ -137,6 +163,7 @@ func Report(rows []OpenRow, opts Options) []SeriesReport {
 		}
 		return cmp.Or(
 			cmp.Compare(b.Score, a.Score),
+			cmp.Compare(b.NetEdgeBps*b.OpensPerDay, a.NetEdgeBps*a.OpensPerDay),
 			cmp.Compare(b.ExcessBps*b.OpensPerDay, a.ExcessBps*a.OpensPerDay),
 			cmp.Compare(b.MiscalBps*b.OpensPerDay, a.MiscalBps*a.OpensPerDay),
 			cmp.Compare(a.Series, b.Series),
@@ -155,13 +182,14 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	rep.Days = int(utcDay(last)-utcDay(first)) + 1
 	rep.OpensPerDay = float64(rep.Opens) / float64(rep.Days)
 
-	var exactDelays, candleDelays, spreads, impacts []float64
+	var exactDelays, candleDelays, spreads, mids, impacts []float64
 	var bidSizes, askSizes []int64
 	events := map[string][]OpenRow{}
 	for _, r := range rows {
 		if r.Mid != nil {
 			rep.Quoted++
 			spreads = append(spreads, float64(*r.Ask-*r.Bid))
+			mids = append(mids, float64(*r.Mid))
 			delay := float64(r.QuoteMs - r.OpenMs)
 			if r.Source == SourceCapture {
 				rep.Captured++
@@ -192,7 +220,7 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	} else if len(candleDelays) > 0 {
 		rep.QuoteDelayMs, rep.QuoteDelayN = median(candleDelays), len(candleDelays)
 	}
-	rep.SpreadBps = median(spreads)
+	rep.SpreadBps, rep.MedianMidBps = median(spreads), median(mids)
 	rep.BidSizeMode, rep.BidModeShare = mode(bidSizes)
 	rep.AskSizeMode, rep.AskModeShare = mode(askSizes)
 	rep.ImpactN, rep.ImpactBpsPerContract = len(impacts), median(impacts)
@@ -207,10 +235,23 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 
 	rep.Calibration = calibrate(series, rows, opts.Seed, opts.Resamples)
 	rep.MiscalLowerBound = rep.CandleCal > 0
+	modalCenti := (rep.BidSizeMode + rep.AskSizeMode) / 2
+	modal := float64(modalCenti) / 100 // contracts
 	if rep.Settled > 0 && rep.Sized > 0 {
-		modal := float64(rep.BidSizeMode+rep.AskSizeMode) / 2 / 100 // contracts
-		rep.Score = rep.MiscalBps / 10000 * modal * rep.OpensPerDay
-		rep.HasScore = true
+		rep.GrossScore, rep.HasGross = rep.MiscalBps/10000*modal*rep.OpensPerDay, true
+	}
+	if opts.Fees != nil && rep.Quoted > 0 {
+		rep.FeeSizeCenti = feeDefaultSize
+		if rep.Sized > 0 && modalCenti > 0 {
+			rep.FeeSizeCenti = modalCenti
+		}
+		rep.FeeBps, rep.HasFee = opts.Fees.TakerFeeBps(series, rep.FeeSizeCenti, int(math.Round(rep.MedianMidBps)))
+	}
+	if rep.Settled > 0 && rep.HasFee {
+		rep.NetEdgeBps, rep.HasNet = max(0, rep.ExcessBps-rep.SpreadBps/2-rep.FeeBps), true
+	}
+	if rep.HasNet && rep.Sized > 0 {
+		rep.Score, rep.HasScore = rep.NetEdgeBps/10000*modal*rep.OpensPerDay, true
 	}
 	return rep
 }

@@ -25,7 +25,7 @@ func na(ok bool, format string, args ...any) string {
 // calibration table under it.
 func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tscore\t")
+	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\t")
 	for i, r := range reps {
 		delay := na(r.QuoteDelayN > 0, "%.0fms", r.QuoteDelayMs)
 		if r.QuoteDelayN > 0 && !r.QuoteDelayExact {
@@ -37,7 +37,7 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 		if r.MiscalLowerBound {
 			lb = "≥"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			i+1, r.Series, r.Opens, r.OpensPerDay, r.Quoted, r.Captured, delay,
 			na(r.Sized > 0, "%s", centi(r.BidSizeMode)), na(r.Sized > 0, "%.0f%%", r.BidModeShare*100),
 			na(r.Sized > 0, "%s", centi(r.AskSizeMode)), na(r.Sized > 0, "%.0f%%", r.AskModeShare*100),
@@ -49,7 +49,10 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 			na(r.Settled > 0, "%s%.0f [%.0f, %.0f]", lb, r.MiscalBps, r.LoBps, r.HiBps),
 			na(r.Settled > 0, "%.0f", r.NullBps),
 			na(r.Settled > 0, "%s%.0f", lb, r.ExcessBps),
-			na(r.HasScore, "%.2f", r.Score))
+			na(r.HasFee, "%.0f", r.FeeBps),
+			na(r.HasNet, "%s%.0f", lb, r.NetEdgeBps),
+			na(r.HasScore, "%s%.2f", lb, r.Score),
+			na(r.HasGross, "%.2f", r.GrossScore))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -68,7 +71,11 @@ from resampling events (bias-corrected, so it can lie below the estimate). null:
 mids, one draw per event); it is not zero, and grows as events get fewer. excess = miscal - null,
 floored at 0. ≥: some of the opening quotes are 1-minute candle closes, up to a minute late and possibly
 already repriced, so the miscalibration shown is a lower bound.
-score = miscal/10000 x modal size x opens/day; "-" where a factor is missing.
+fee: taker fee per contract at the median opening mid, for an order of the modal size (100 contracts
+where no sizes were captured), from fees.yaml's rate and the series' fee_multiplier.
+net edge = excess - half the median spread - fee, floored at 0.
+score = net edge/10000 x modal size x opens/day. gross = miscal/10000 x modal size x opens/day: the
+old score, with nothing taken off. "-" where a factor is missing.
 `)
 	if !deciles {
 		return nil
@@ -106,7 +113,8 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 		"quote_delay_ms", "quote_delay_exact", "sized", "bid_size_mode", "bid_mode_share", "ask_size_mode", "ask_mode_share",
 		"spread_bps", "fit_events", "fit_rmse_bps", "impact_trades", "impact_bps_per_contract",
 		"settled", "cal_events", "cal_from_candles", "miscal_is_lower_bound", "brier",
-		"miscal_bps", "miscal_lo_bps", "miscal_hi_bps", "null_miscal_bps", "excess_miscal_bps", "score"}
+		"miscal_bps", "miscal_lo_bps", "miscal_hi_bps", "null_miscal_bps", "excess_miscal_bps",
+		"median_mid_bps", "fee_bps", "fee_size", "net_edge_bps", "score", "gross_score"}
 	for d := range 10 {
 		header = append(header, fmt.Sprintf("d%d_n", d), fmt.Sprintf("d%d_mean_mid_bps", d), fmt.Sprintf("d%d_realized", d))
 	}
@@ -133,7 +141,9 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 			strconv.Itoa(r.Settled), strconv.Itoa(r.CalEvents), strconv.Itoa(r.CandleCal), strconv.FormatBool(r.MiscalLowerBound),
 			f(r.Settled > 0, r.Brier, 6),
 			f(r.Settled > 0, r.MiscalBps, 1), f(r.Settled > 0, r.LoBps, 1), f(r.Settled > 0, r.HiBps, 1),
-			f(r.Settled > 0, r.NullBps, 1), f(r.Settled > 0, r.ExcessBps, 1), f(r.HasScore, r.Score, 4),
+			f(r.Settled > 0, r.NullBps, 1), f(r.Settled > 0, r.ExcessBps, 1),
+			f(r.Quoted > 0, r.MedianMidBps, 0), f(r.HasFee, r.FeeBps, 2), f(r.HasFee, float64(r.FeeSizeCenti)/100, 2),
+			f(r.HasNet, r.NetEdgeBps, 1), f(r.HasScore, r.Score, 4), f(r.HasGross, r.GrossScore, 4),
 		}
 		for _, dec := range r.Deciles {
 			row = append(row, strconv.Itoa(dec.N), f(dec.N > 0, dec.MeanBps, 1), f(dec.N > 0, dec.Freq, 4))

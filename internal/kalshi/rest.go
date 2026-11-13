@@ -251,6 +251,13 @@ type Series struct {
 	Frequency   string   `json:"frequency"`
 	Tags        []string `json:"tags,omitempty"`
 	LastUpdated string   `json:"last_updated_ts,omitempty"` // RFC 3339, as Kalshi sent it
+
+	// FeeType is quadratic, quadratic_with_maker_fees,
+	// quadratic_with_combo_maker_fees or flat; FeeMultiplier "a floating
+	// point multiplier applied to the fee calculations", kept as Kalshi
+	// wrote the number.
+	FeeType       string      `json:"fee_type,omitempty"`
+	FeeMultiplier json.Number `json:"fee_multiplier,omitempty"`
 }
 
 // SeriesList fetches GET /series, which is not paginated: one response

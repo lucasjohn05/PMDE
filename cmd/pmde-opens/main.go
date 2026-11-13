@@ -99,6 +99,7 @@ func report(args []string) {
 	deciles := fs.Bool("deciles", false, "also print each series' calibration table by opening-mid decile")
 	seed := fs.Uint64("seed", 1, "seed for the bootstrap and the null simulation; the same rows and seed give the same report")
 	resamples := fs.Int("resamples", opens.DefaultResamples, "bootstrap resamples and null simulations per series")
+	feesPath := fs.String("fees", "fees.yaml", "fee rates (YAML), for the net edge; \"\" reports without net figures")
 	fs.Parse(args)
 
 	dir := filepath.Join(*dataDir, "opens")
@@ -109,7 +110,12 @@ func report(args []string) {
 	if len(rows) == 0 {
 		log.Fatalf("no rows in %s; run pmde-opens backfill first", filepath.Join(dir, "backfill.jsonl"))
 	}
-	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples})
+	fees, err := opens.FeesOrNil(*feesPath, dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees})
+	noteFees(fees, reps)
 	if err := opens.WriteText(os.Stdout, reps, *deciles); err != nil {
 		log.Fatal(err)
 	}
@@ -131,4 +137,26 @@ func report(args []string) {
 		log.Fatal(err)
 	}
 	log.Printf("wrote %s", *csvPath)
+}
+
+// noteFees says where the fee inputs came from, and which series have
+// no fee and so no net figures.
+func noteFees(fees *opens.Fees, reps []opens.SeriesReport) {
+	if fees == nil {
+		return
+	}
+	snapshot := "no series snapshot"
+	if fees.SnapshotDay != "" {
+		snapshot = "the " + fees.SnapshotDay + " series snapshot"
+	}
+	log.Printf("fees: taker rate %d ppm (fees.yaml, checked %s) x each series' fee_multiplier from %s", fees.TakerRatePPM, fees.Checked, snapshot)
+	var missing []string
+	for _, r := range reps {
+		if r.Quoted > 0 && !r.HasFee {
+			missing = append(missing, r.Series)
+		}
+	}
+	if len(missing) > 0 {
+		log.Printf("no fee for %d series (not in the snapshot with a fee_type, or a fee type with no formula here), so no net edge: %v", len(missing), missing)
+	}
 }

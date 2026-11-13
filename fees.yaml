@@ -14,6 +14,8 @@ kalshi:
   # fee_multiplier, which is 1 for KXFEDDECISION (fee_type
   # quadratic_with_maker_fees, no scheduled fee changes, checked
   # 2026-10-22). Makers pay 0.25 x the taker rate; unused here.
+  # pmde-opens uses this rate too, times each series' fee_multiplier
+  # from its series snapshot (see docs/open-scanner.md).
   taker_rate_ppm: 70000
   checked: 2026-10-22
   sources:

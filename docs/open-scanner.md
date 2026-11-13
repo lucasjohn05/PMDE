@@ -79,7 +79,8 @@ KALSHI_KEY_PATH=/path/to/key.pem KALSHI_KEY_ID=<key id> \
 # allowlist's markets settled since a date (public REST; no key)
 ./pmde-opens backfill -config opens.yaml -data-dir data -since 2026-10-15
 
-# the ranked table, plus data/opens/report.csv
+# the ranked table, plus data/opens/report.csv (reads fees.yaml for the
+# net edge; -seed fixes the bootstrap)
 ./pmde-opens report -data-dir data -deciles
 ```
 
@@ -102,7 +103,7 @@ curl -s localhost:9101/metrics | grep '^opens_'
 docker compose -f deploy/compose.yaml --profile scan run --rm \
   --entrypoint /usr/local/bin/pmde-opens scan backfill -config /etc/pmde/opens.yaml -data-dir /data
 docker compose -f deploy/compose.yaml --profile scan run --rm \
-  --entrypoint /usr/local/bin/pmde-opens scan report -data-dir /data -deciles
+  --entrypoint /usr/local/bin/pmde-opens scan report -data-dir /data -fees /etc/pmde/fees.yaml -deciles
 ```
 
 The backfill is incremental, so it can run from cron once a day. To
@@ -207,10 +208,18 @@ short-lived markets, and per-market series would grow without bound.
   frequency|, in bps, with a 90% interval. `-deciles` prints the table
   behind it.
 - **null, excess**: see the next section.
-- **score** = miscal (as a fraction of $1) × modal opening size
+- **fee**: the taker fee per contract, in bps, at the median opening
+  mid. See "Net of cost" below.
+- **net edge** = excess − half the median opening spread − fee, floored
+  at zero, in bps.
+- **score** = net edge (as a fraction of $1) × modal opening size
   (contracts, mean of the two sides) × opens per day. Roughly dollars a
-  day. It is blank until a series has both settled opens and captured
-  sizes; such series rank below scored ones, by excess × opens/day.
+  day after costs. It is blank until a series has settled opens,
+  captured sizes and a known fee; such series rank below scored ones,
+  by net edge × opens/day, then excess × opens/day.
+- **gross** = miscal × modal opening size × opens per day: the score as
+  it was first defined, with nothing taken off for the noise floor, the
+  spread or fees. Kept for comparison; it overstates.
 
 ### The noise floor under miscal
 
@@ -248,6 +257,56 @@ wrong quote may already have been traded back toward fair by then. Where
 any of a series' settled opens are candle-sourced, its miscal and excess
 are printed with `≥`, the decile table says how many, and the CSV has
 `cal_from_candles` and `miscal_is_lower_bound`.
+
+### Net of cost
+
+A taker who wants the miscalibration has to cross half the spread and
+pay the fee, so both come off the excess before it counts as edge.
+
+The fee is a function of price, and nothing about the schedule is
+written into the scanner's code:
+
+- the **rate** is `kalshi.taker_rate_ppm` in `fees.yaml`, the file
+  `pmde-analyze` already uses, with its sources and the date it was
+  checked (`-fees`, default `fees.yaml`; `-fees ""` reports without net
+  figures);
+- each series' **`fee_type` and `fee_multiplier`** come from Kalshi's
+  series list, as saved in the latest series snapshot. The effective
+  rate is rate × `fee_multiplier`;
+- the **formula and rounding** are `analysis.KalshiFee`:
+  `roundup(rate × C × P × (1−P))` to the next cent, per order.
+
+The fee is priced for one order of the modal opening size at the median
+opening mid (100 contracts where the series has no captured sizes), and
+divided by the size. The size matters because of the round-up: at 50¢
+the fee is 1.75¢ a contract on 100 contracts and 2¢ on one.
+
+What the fee does and does not cover:
+
+- `quadratic`, `quadratic_with_maker_fees` and
+  `quadratic_with_combo_maker_fees` share the taker fee; they differ in
+  what makers pay. `flat` series are priced from a different table of
+  the fee schedule that this code does not have, so they get no fee and
+  no net edge (none of the 16,341 series was `flat` on 2026-11-13).
+- Checked on 2026-11-13: Kalshi's API docs for the meaning of
+  `fee_type` and `fee_multiplier` and for fee rounding, and the live
+  series list (16,145 series `quadratic` × 1; 18 at × 0.5; 14 at × 0;
+  163 with maker fees).
+- **Not re-checked on 2026-11-13: the 0.07 rate itself.** It is stated
+  only in the fee schedule PDF, which returned HTTP 429 to every fetch
+  that day. `fees.yaml` has it as read from that PDF on 2026-10-22. If
+  the schedule has changed since, change `fees.yaml`.
+- Kalshi's rounding page describes rounding each fill up to $0.000001
+  and then aligning balances ($0.01 for most members), with a per-order
+  accumulator. Rounding the order's fee up to the next cent is the same
+  or slightly more: the conservative reading, as in `pmde-analyze`.
+- Not applied: event-level fee overrides (`fee_type_override` on the
+  event), fee waivers (`fee_waiver_expiration_time` on the market), and
+  scheduled fee changes (`GET /series/fee_changes`). The fee is today's
+  series-level fee, applied to all of the series' history.
+- A snapshot written before the fee fields were kept has none; the
+  series then have no fee until the next daily snapshot, or
+  `pmde-opens series -fetch`.
 
 ## What the Kalshi API allowed, and the fallbacks
 

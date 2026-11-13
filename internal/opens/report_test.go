@@ -123,8 +123,8 @@ func TestCalibrationBrierAndScore(t *testing.T) {
 	if d := cal.Deciles[8]; d.N != 10 || !near(d.Freq, 0.8, 1e-9) {
 		t.Errorf("CAL 80-90%% decile %+v", d)
 	}
-	if !cal.HasScore || cal.Score > 1e-6 {
-		t.Errorf("CAL score %v, want 0", cal.Score)
+	if !cal.HasGross || cal.GrossScore > 1e-6 {
+		t.Errorf("CAL gross score %v, want 0", cal.GrossScore)
 	}
 
 	if off.Settled != 10 || !near(off.MiscalBps, 4000, 1e-6) {
@@ -135,8 +135,8 @@ func TestCalibrationBrierAndScore(t *testing.T) {
 		t.Errorf("OFF Brier %v", off.Brier)
 	}
 	// 0.40 miscalibration x 200 contracts (mean of 100 and 300) x 12 opens a day.
-	if !off.HasScore || !near(off.Score, 0.4*200*12, 1e-6) {
-		t.Errorf("OFF score %v, want %v", off.Score, 0.4*200*12)
+	if !off.HasGross || !near(off.GrossScore, 0.4*200*12, 1e-6) {
+		t.Errorf("OFF gross score %v, want %v", off.GrossScore, 0.4*200*12)
 	}
 }
 
@@ -234,8 +234,8 @@ func TestWriteTextAndCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 3 || len(recs[0]) != 30+30 {
-		t.Fatalf("%d CSV rows of %d columns, want 3 of 60", len(recs), len(recs[0]))
+	if len(recs) != 3 || len(recs[0]) != 35+30 {
+		t.Fatalf("%d CSV rows of %d columns, want 3 of 65", len(recs), len(recs[0]))
 	}
 	col := map[string]int{}
 	for i, h := range recs[0] {
