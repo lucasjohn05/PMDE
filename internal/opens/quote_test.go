@@ -249,3 +249,36 @@ func TestParseConfigBackfillOnly(t *testing.T) {
 		t.Errorf("a series in both lists")
 	}
 }
+
+// series_windows lengthens the recording for matching series only; the
+// longest prefix wins, and a window outside [window, 2h] is an error.
+func TestSeriesWindows(t *testing.T) {
+	c, err := ParseConfig([]byte("series: [A]\nwindow: 60s\nseries_windows:\n  - {prefix: KXAAAGASCD, window: 30m}\n  - {prefix: KXAAAGASCDTX, window: 45m}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for series, want := range map[string]time.Duration{
+		"KXAAAGASCDNY": 30 * time.Minute,
+		"KXAAAGASCDTX": 45 * time.Minute,
+		"KXAAAGASD":    time.Minute,
+		"KXAAAGASDTX":  time.Minute,
+	} {
+		if got := c.WindowFor(series); got != want {
+			t.Errorf("WindowFor(%s) = %v, want %v", series, got, want)
+		}
+	}
+	if d := DefaultConfig(); d.WindowFor("X") != d.Window {
+		t.Errorf("no series_windows: WindowFor should be Window")
+	}
+	for name, cfg := range map[string]string{
+		"shorter than window": "series: [A]\nwindow: 60s\nseries_windows: [{prefix: X, window: 30s}]\n",
+		"over 2h":             "series: [A]\nseries_windows: [{prefix: X, window: 3h}]\n",
+		"empty prefix":        "series: [A]\nseries_windows: [{prefix: '', window: 5m}]\n",
+		"twice":               "series: [A]\nseries_windows: [{prefix: X, window: 5m}, {prefix: X, window: 6m}]\n",
+		"bad duration":        "series: [A]\nseries_windows: [{prefix: X, window: soon}]\n",
+	} {
+		if _, err := ParseConfig([]byte(cfg)); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+}

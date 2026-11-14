@@ -21,6 +21,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -49,6 +50,13 @@ type Config struct {
 	// long after open_time it records.
 	Lead, Window time.Duration
 
+	// SeriesWindows records some series for longer than Window: a
+	// series whose ticker starts with Prefix records for that Window
+	// (the longest matching prefix wins). Only the recording changes;
+	// rungs are still grouped into events over Window, and the
+	// backfill's flow window is still Window. See WindowFor.
+	SeriesWindows []SeriesWindow
+
 	// MaxConcurrent caps captures running at once. A capture is one
 	// websocket connection covering the rungs of one event that open
 	// together; an event past the cap is skipped whole and counted.
@@ -63,6 +71,23 @@ type Config struct {
 
 	// BadMaker is when pmde-opens badmakers flags a series.
 	BadMaker BadMakerRule
+}
+
+// SeriesWindow is one series_windows entry.
+type SeriesWindow struct {
+	Prefix string
+	Window time.Duration
+}
+
+// WindowFor is how long after open_time a capture of the series records.
+func (c Config) WindowFor(series string) time.Duration {
+	w, best := c.Window, -1
+	for _, sw := range c.SeriesWindows {
+		if strings.HasPrefix(series, sw.Prefix) && len(sw.Prefix) > best {
+			w, best = sw.Window, len(sw.Prefix)
+		}
+	}
+	return w
 }
 
 // DefaultConfig is what an empty config file means, except that Series
@@ -92,10 +117,14 @@ type configFile struct {
 	MaxNewSeries     *int     `yaml:"max_new_series"`
 	Lead             string   `yaml:"lead"`
 	Window           string   `yaml:"window"`
-	MaxConcurrent    *int     `yaml:"max_concurrent"`
-	MarketPoll       string   `yaml:"market_poll"`
-	SeriesPoll       string   `yaml:"series_poll"`
-	Quote            *struct {
+	SeriesWindows    []struct {
+		Prefix string `yaml:"prefix"`
+		Window string `yaml:"window"`
+	} `yaml:"series_windows"`
+	MaxConcurrent *int   `yaml:"max_concurrent"`
+	MarketPoll    string `yaml:"market_poll"`
+	SeriesPoll    string `yaml:"series_poll"`
+	Quote         *struct {
 		MaxSpreadBps *int     `yaml:"max_spread_bps"`
 		MinSize      *float64 `yaml:"min_size"` // contracts
 	} `yaml:"quote"`
@@ -132,6 +161,8 @@ func LoadConfig(path string) (Config, error) {
 //	max_new_series: 100
 //	lead: 5s
 //	window: 60s
+//	series_windows:
+//	  - {prefix: KXAAAGASCD, window: 30m}
 //	max_concurrent: 50
 //	market_poll: 1m
 //	series_poll: 15m
@@ -214,6 +245,23 @@ func ParseConfig(data []byte) (Config, error) {
 			return Config{}, fmt.Errorf("%s must be at least %v", d.name, d.min)
 		}
 		*d.dst = v
+	}
+	seenPrefix := map[string]bool{}
+	for _, sw := range f.SeriesWindows {
+		if sw.Prefix == "" || seenPrefix[sw.Prefix] {
+			return Config{}, fmt.Errorf("series_windows: prefix %q is empty or listed twice", sw.Prefix)
+		}
+		seenPrefix[sw.Prefix] = true
+		v, err := time.ParseDuration(sw.Window)
+		if err != nil {
+			return Config{}, fmt.Errorf("series_windows %s: %w", sw.Prefix, err)
+		}
+		// A capture is one connection for its whole window; 2h is far
+		// past any opening quote and keeps a typo from holding slots.
+		if v < c.Window || v > 2*time.Hour {
+			return Config{}, fmt.Errorf("series_windows %s: window must be between window (%v) and 2h", sw.Prefix, c.Window)
+		}
+		c.SeriesWindows = append(c.SeriesWindows, SeriesWindow{Prefix: sw.Prefix, Window: v})
 	}
 	if q := f.Quote; q != nil {
 		if q.MaxSpreadBps != nil {

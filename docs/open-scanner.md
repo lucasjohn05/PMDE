@@ -348,6 +348,7 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | `max_new_series` | 100 | At most this many new series (the most recent). |
 | `lead` | `5s` | Subscribe this long before `open_time`. |
 | `window` | `60s` | Record until this long after `open_time`. |
+| `series_windows` | none | `{prefix, window}` entries: series whose ticker starts with `prefix` record for `window` (at least `window`, at most 2h; the longest prefix wins). Only the recording; grouping and the backfill's flow window use `window`. |
 | `max_concurrent` | 50 | Captures at once. One capture is one connection, covering one event's rungs. |
 | `market_poll` | `1m` | Poll interval for the watched series' unopened markets. |
 | `series_poll` | `15m` | Poll interval for the series list. |
@@ -358,11 +359,14 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 Unknown keys are errors. The checked-in allowlist is 105 series. 55 (48
 daily temperature ladders, plus KXAAAGASD, KXBIGGESTQUAKE, KXBRENTD,
 KXWTI, KXEURUSD, KXUSDJPY and KXTRUTHSOCIALD) were chosen from a triage
-of all 481 hourly and daily series on 2026-11-13. The 50 state gas
-ladders (KXAAAGASD + state) were added the same day for the gas paper
-trader, which needs their opening books with sizes; ten of them had
-been in `backfill_only`. `backfill_only` holds the other 7 series that
+of all 481 hourly and daily series on 2026-11-13. The other 50 are the
+state gas bucket markets (KXAAAGASCD + state), for the gas paper
+trader, which needs their opening books with sizes. They replaced the
+KXAAAGASD?? state ladders from event date 2026-11-15; those 50 are in
+`backfill_only` for their settled history, with the 7 series that
 passed the triage only on 1c/99c stub books, for the flow columns.
+`series_windows` records the bucket series for 30m instead of 60s:
+their maker quotes 5-20 minutes after the open.
 `max_concurrent` is 100 because 50 of those events open at the same
 instant (15:00Z daily). The 51 gas events open together at 13:00Z;
 with the new-series events opening then (25 on 2026-11-13) that is 76

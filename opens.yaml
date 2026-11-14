@@ -58,9 +58,80 @@ series:
   - KXLOWTTTN
   # gas, earthquakes, oil, FX, Truth Social posts
   - KXAAAGASD
-  # The 50 state gas ladders (KXAAAGASD + state), added 2026-11-13 for the
-  # gas paper trader, which needs their opening books with sizes. All 51
-  # gas events open together at 13:00Z.
+  # The 50 state gas bucket markets (KXAAAGASCD + state: five buckets on
+  # the day's change in the AAA price), for the gas paper trader. They
+  # replaced the KXAAAGASD?? state ladders from event date 2026-11-15
+  # (those are in backfill_only now). Listed here so none depends on the
+  # new-series window: on 2026-11-14 only the 25 Kalshi listed after the
+  # scanner's first snapshot were watched. All open at 13:00Z with the
+  # national ladder; see series_windows for why they record for 30m.
+  - KXAAAGASCDAK
+  - KXAAAGASCDAL
+  - KXAAAGASCDAR
+  - KXAAAGASCDAZ
+  - KXAAAGASCDCA
+  - KXAAAGASCDCO
+  - KXAAAGASCDCT
+  - KXAAAGASCDDE
+  - KXAAAGASCDFL
+  - KXAAAGASCDGA
+  - KXAAAGASCDHI
+  - KXAAAGASCDIA
+  - KXAAAGASCDID
+  - KXAAAGASCDIL
+  - KXAAAGASCDIN
+  - KXAAAGASCDKS
+  - KXAAAGASCDKY
+  - KXAAAGASCDLA
+  - KXAAAGASCDMA
+  - KXAAAGASCDMD
+  - KXAAAGASCDME
+  - KXAAAGASCDMI
+  - KXAAAGASCDMN
+  - KXAAAGASCDMO
+  - KXAAAGASCDMS
+  - KXAAAGASCDMT
+  - KXAAAGASCDNC
+  - KXAAAGASCDND
+  - KXAAAGASCDNE
+  - KXAAAGASCDNH
+  - KXAAAGASCDNJ
+  - KXAAAGASCDNM
+  - KXAAAGASCDNV
+  - KXAAAGASCDNY
+  - KXAAAGASCDOH
+  - KXAAAGASCDOK
+  - KXAAAGASCDOR
+  - KXAAAGASCDPA
+  - KXAAAGASCDRI
+  - KXAAAGASCDSC
+  - KXAAAGASCDSD
+  - KXAAAGASCDTN
+  - KXAAAGASCDTX
+  - KXAAAGASCDUT
+  - KXAAAGASCDVA
+  - KXAAAGASCDVT
+  - KXAAAGASCDWA
+  - KXAAAGASCDWI
+  - KXAAAGASCDWV
+  - KXAAAGASCDWY
+  - KXBIGGESTQUAKE
+  - KXBRENTD
+  - KXEURUSD
+  - KXTRUTHSOCIALD
+  - KXUSDJPY
+  - KXWTI
+
+# Backfilled and reported on, but not captured: series that passed the
+# 2026-11-13 triage at 50% only on 1c/99c stub books (median opening
+# spread 9400-9800 bps). Their results, opening prices and trades are
+# fetched, so the report's flow columns show whether anyone takes there.
+# There were 17; the ten state gas ladders among them moved to `series`.
+#
+# Also the 50 KXAAAGASD?? state gas ladders, which Kalshi stopped listing
+# after event date 2026-11-14: kept for the backfill of their settled
+# history, no longer polled for opens.
+backfill_only:
   - KXAAAGASDAK
   - KXAAAGASDAL
   - KXAAAGASDAR
@@ -111,19 +182,6 @@ series:
   - KXAAAGASDWI
   - KXAAAGASDWV
   - KXAAAGASDWY
-  - KXBIGGESTQUAKE
-  - KXBRENTD
-  - KXEURUSD
-  - KXTRUTHSOCIALD
-  - KXUSDJPY
-  - KXWTI
-
-# Backfilled and reported on, but not captured: series that passed the
-# 2026-11-13 triage at 50% only on 1c/99c stub books (median opening
-# spread 9400-9800 bps). Their results, opening prices and trades are
-# fetched, so the report's flow columns show whether anyone takes there.
-# There were 17; the ten state gas ladders among them moved to `series`.
-backfill_only:
   - KXCS2MAP
   - KXSOFRD
   - KXTRUMPACTD
@@ -144,6 +202,16 @@ max_new_series: 100
 lead: 5s
 window: 60s
 
+# Series recorded for longer than `window` (longest matching prefix).
+# On 2026-11-14 the one maker on the gas bucket markets quoted 5-6 min
+# after the 13:00Z open, and some states first went two-sided at +20m,
+# so a 60s capture held no orders at all. Only the recording is longer:
+# rungs are still grouped into events over `window`, and the backfill's
+# flow window stays `window`. 51 gas events hold a connection for 30m,
+# well under max_concurrent.
+series_windows:
+  - {prefix: KXAAAGASCD, window: 30m}
+
 # Captures running at once. A capture is one websocket connection
 # covering all the rungs of one event that open together. An event past
 # the cap is skipped whole and counted in opens_skipped_total.
@@ -155,10 +223,10 @@ window: 60s
 # then too. With pmde's 4 connections that is 104 of the 200 Kalshi
 # allows on the lower tiers.
 #
-# The 51 gas events open together at 13:00Z. Checked 2026-11-13: with
-# the 25 new-series KXAAAGASCD?? events that open at the same instant
-# that is 76 captures, 80 connections with pmde's 4. It fits; the cap
-# was not raised.
+# The gas events open together at 13:00Z: since 2026-11-15 the national
+# ladder and the 50 state bucket markets, 51 captures (the bucket ones
+# held 30m), 55 connections with pmde's 4. It fits; the cap was not
+# raised.
 max_concurrent: 100
 
 # How often to poll the watched series' unopened markets, and the

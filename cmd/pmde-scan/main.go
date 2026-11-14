@@ -92,6 +92,9 @@ func main() {
 	}
 	log.Printf("scanning %d allowlisted series (new series: %v); subscribing %v before each open, recording %v after, at most %d at once; quote rule %v; storing to %s",
 		len(cfg.Series), cfg.IncludeNewSeries, cfg.Lead, cfg.Window, cfg.MaxConcurrent, cfg.Quote, dir)
+	for _, sw := range cfg.SeriesWindows {
+		log.Printf("recording %s* series for %v after each open (series_windows)", sw.Prefix, sw.Window)
+	}
 
 	recorderDone := make(chan struct{})
 	go func() {

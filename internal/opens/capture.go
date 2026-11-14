@@ -297,9 +297,9 @@ const captureTick = 250 * time.Millisecond
 // Capturer records market opens, an event at a time. The rungs of an
 // event that open together share one connection and one orderbook_delta
 // subscription (kalshi.EventClient): it subscribes Lead before the
-// first open_time, records every book event of every rung until Window
-// after the last, and then closes the connection, which ends the
-// subscription.
+// first open_time, records every book event of every rung until the
+// series' window (Cfg.WindowFor) after the last, and then closes the
+// connection, which ends the subscription.
 //
 // Subscribing before the open works: Kalshi answers with an empty
 // snapshot per market, and the first deltas are the opening orders.
@@ -441,7 +441,7 @@ func (c *Capturer) capture(ctx context.Context, e EventOpening) {
 		}
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, e.Last().Add(c.Cfg.Window).Sub(start))
+	cctx, cancel := context.WithTimeout(ctx, e.Last().Add(c.Cfg.WindowFor(e.Series)).Sub(start))
 	defer cancel()
 	client := &kalshi.EventClient{
 		URL:     c.URL,

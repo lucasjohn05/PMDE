@@ -467,3 +467,28 @@ func TestRecorderSendBlocksWhenFull(t *testing.T) {
 		t.Errorf("opens_writer_blocked_seconds_total = %v, want at least the 50ms wait", n)
 	}
 }
+
+// A series matching series_windows is recorded for its own window, not
+// the default one.
+func TestCaptureUsesTheSeriesWindow(t *testing.T) {
+	lines := openCaptureLines(t)
+	open := time.Now().Add(400 * time.Millisecond)
+	v := &wsVenue{script: func(conn *websocket.Conn, tickers []string) {
+		wsSend(conn, lines[:2]...)
+	}}
+	cfg := captureConfig(300*time.Millisecond, 200*time.Millisecond, 4)
+	cfg.SeriesWindows = []SeriesWindow{{Prefix: "KXNHL2P", Window: 900 * time.Millisecond}}
+	rig := startCapturer(t, v, cfg)
+	rig.c.Schedule.Update("KXNHL2PTOTAL", []kalshi.Market{{
+		Ticker: openTicker, Event: "KXNHL2PTOTAL-26NOV12MTLBOS", Rung: "Over 3.5 goals",
+		StrikeType: "greater", FloorStrike: "3.5", Open: open,
+	}})
+	waitFor(t, 10*time.Second, "the capture to finish", func() bool { return len(rig.captures(t)) == 1 })
+	rig.stop()
+	end := time.UnixMilli(rig.captures(t)[0].EndMs)
+	// Timer and clock granularity under -race in a container can end it a
+	// few ms early; anything near 900ms is the series window, not 200ms.
+	if end.Before(open.Add(800*time.Millisecond)) || end.After(open.Add(3*time.Second)) {
+		t.Errorf("capture ended %v after the open, want about the 900ms series window (default 200ms)", end.Sub(open))
+	}
+}
