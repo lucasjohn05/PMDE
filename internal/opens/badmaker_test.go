@@ -170,7 +170,7 @@ func TestBadMakersFileAndMetrics(t *testing.T) {
 			}
 		}
 	}
-	if n["opens_bad_maker_alert_until_timestamp_seconds"] != 1 || n["opens_bad_maker_stat"] != 15 {
+	if n["opens_bad_maker_alert_until_timestamp_seconds"] != 1 || n["opens_bad_maker_stat"] != 20 { // 15 conditions + 5 context figures
 		t.Errorf("metric counts %v", n)
 	}
 	m.SetBadMakers(nil)

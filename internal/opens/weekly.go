@@ -35,7 +35,8 @@ type Weekly struct {
 	Skips     map[string]int            // skipped opens in the week, by reason
 	Captures  struct{ Captures, Markets, Incomplete, Resyncs int }
 
-	Rule QuoteRule
+	Rule   QuoteRule
+	Screen ScreenRule
 
 	DataBytes, OpensBytes int64 // under the data directory, and its opens/
 	DiskFree, DiskTotal   uint64
@@ -63,7 +64,17 @@ func LoadWeekly(dataDir, dir string, now time.Time, opts Options) (Weekly, error
 		}
 	}
 	opts.MinOpens = 1
+	if w.Screen = opts.Screen; w.Screen == (ScreenRule{}) {
+		w.Screen = DefaultScreenRule()
+	}
+	weekQuoters, err := LoadQuoters(dir, now.Add(-w.Week), now, w.Rule)
+	if err != nil {
+		return w, err
+	}
+	allOpts := opts
+	opts.Quoters = weekQuoters
 	w.Week7 = Report(week, opts)
+	opts = allOpts
 	w.AllTime = Report(rows, opts)
 	held := make([]OpenRow, len(rows))
 	for i, r := range rows {
@@ -177,19 +188,44 @@ func WriteWeekly(out io.Writer, w Weekly) error {
 		if len(cands) == 0 {
 			p("None.\n\n")
 		} else {
-			p("| Series | Title | Quoted | Capacity/day | One quote | Events | Net edge [lo] | Wings against/expected (top) |\n|---|---|--:|--:|---|--:|--:|--:|\n")
+			p("| Series | Title | Quoted | Capacity/day | One quote | Events | Net edge [lo] | Wings against/expected (top) | Window $/day | Life $/day | Quoters (top) | Screen |\n|---|---|--:|--:|---|--:|--:|--:|--:|--:|--:|---|\n")
 			for _, e := range cands {
 				name := e.Series
 				if e.Test {
 					name += " (delivery test)"
 				}
-				p("| %s | %s | %.0f%% of %d | %.0f | %.0f%%: %s x %s, %d bps | %d | %.0f [%.0f] | %d / %.1f (%.1f) |\n",
+				p("| %s | %s | %.0f%% of %d | %.0f | %.0f%%: %s x %s, %d bps | %d | %.0f [%.0f] | %d / %.1f (%.1f) | %s | %s | %s | %s |\n",
 					name, e.Title, e.QuotedShare*100, e.CaptureOpens, e.MedianCapacity, e.ComboShare*100,
 					centi(e.ComboBidSz), centi(e.ComboAskSz), e.ComboSpreadBps, e.SettledEvents,
-					e.NetEdgeBps, e.NetEdgeLoBps, e.WingAgainst, e.WingExpected, e.WingHi)
+					e.NetEdgeBps, e.NetEdgeLoBps, e.WingAgainst, e.WingExpected, e.WingHi,
+					na(e.HasNotional, "%s", dollars(e.WindowNotionalPerDay)), na(e.HasNotional, "%s", dollars(e.LifeNotionalPerDay)),
+					na(e.HasQuoters, "%d (%.0f%%)", e.Quoters, e.TopQuoterShare*100), e.Screen)
 			}
 			p("\n")
 		}
+	}
+
+	p("## Screening band\n\n")
+	p("This week's rows and captures, screened on %v. Separate from the bad-maker criteria.\n\n", w.Screen)
+	var screened []SeriesReport
+	unknown := 0
+	for _, r := range w.Week7 {
+		if r.Screen.Candidate {
+			screened = append(screened, r)
+		}
+		if len(r.Screen.Unknown) > 0 {
+			unknown++
+		}
+	}
+	if len(screened) == 0 {
+		p("No candidates. %d of %d series could not be fully judged (no notional yet, never captured, or no quotes).\n\n", unknown, len(w.Week7))
+	} else {
+		p("| Series | Title | Window $/day | Life $/day | Quoters | Top quoter | Spread |\n|---|---|--:|--:|--:|---|--:|\n")
+		for _, r := range screened {
+			p("| %s | %s | %s | %s | %d | %s | %.0f |\n", r.Series, title(r.Series), dollars(r.WindowNotionalPerDay),
+				na(r.LifeDays > 0, "%s", dollars(r.LifeNotionalPerDay)), r.Quoters.Count(), topQuoter(r), r.SpreadBps)
+		}
+		p("\n%d of %d series could not be fully judged.\n\n", unknown, len(w.Week7))
 	}
 
 	p("## Top 10 series by capacity\n\n")
@@ -202,16 +238,18 @@ func WriteWeekly(out io.Writer, w Weekly) error {
 		p("No captured opens this week.\n\n")
 	} else {
 		p("Median daily contracts (and dollars at risk) on qualifying opening quotes, both sides, all rungs; ntm is a mid of 10-90c.\n\n")
-		p("| # | Series | Title | Days | Contracts/day (ntm / wing) | $ at risk/day (ntm / wing) | Quoted / captured | Spread | Traded/day | Quote traded / pulled |\n|--:|---|---|--:|--:|--:|--:|--:|--:|--:|\n")
+		p("| # | Series | Title | Days | Contracts/day (ntm / wing) | $ at risk/day (ntm / wing) | Quoted / captured | Spread | Traded/day | Quote traded / pulled | Window $/day | Life $/day | Quoters | Top quoter | Screen |\n|--:|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|---|---|\n")
 		for i, r := range top[:min(10, len(top))] {
 			flow := "-"
 			if r.QuoteFlowOpens > 0 {
 				flow = fmt.Sprintf("%.0f%% / %.0f%%", r.TradedShare*100, r.PulledShare*100)
 			}
-			p("| %d | %s | %s | %d | %.0f (%.0f / %.0f) | %.0f (%.0f / %.0f) | %d / %d | %s | %.0f | %s |\n",
+			p("| %d | %s | %s | %d | %.0f (%.0f / %.0f) | %.0f (%.0f / %.0f) | %d / %d | %s | %.0f | %s | %s | %s | %s | %s | %s |\n",
 				i+1, r.Series, title(r.Series), r.CapDays, r.Contracts, r.NTMContracts, r.WingContracts,
 				r.Dollars, r.NTMDollars, r.WingDollars, r.Captured, r.CaptureOpens,
-				na(r.Quoted > 0, "%.0f", r.SpreadBps), r.TradedPerDay, flow)
+				na(r.Quoted > 0, "%.0f", r.SpreadBps), r.TradedPerDay, flow,
+				na(r.WindowDays > 0, "%s", dollars(r.WindowNotionalPerDay)), na(r.LifeDays > 0, "%s", dollars(r.LifeNotionalPerDay)),
+				na(r.HasQuoters, "%d", r.Quoters.Count()), topQuoter(r), r.Screen.String())
 		}
 		p("\n")
 	}

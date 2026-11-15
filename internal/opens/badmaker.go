@@ -100,6 +100,19 @@ type BadMakerEval struct {
 
 	Candidate bool `json:"candidate"`
 
+	// Context, not conditions: the notional traded in the capture window
+	// and over the markets' lives (dollars a day), the quoter estimate,
+	// and the screening band's verdict, so the email says why a series
+	// was or wasn't flagged.
+	HasNotional          bool    `json:"has_notional"`
+	WindowNotionalPerDay float64 `json:"window_notional_per_day"`
+	LifeNotionalPerDay   float64 `json:"life_notional_per_day"`
+	HasQuoters           bool    `json:"has_quoters"`
+	Quoters              int     `json:"quoters"`
+	TopQuoterShare       float64 `json:"top_quoter_share"`
+	Screen               string  `json:"screen"`
+	ScreenCandidate      bool    `json:"screen_candidate"`
+
 	// NotifiedMs is the last time the series was put up for an email,
 	// and AlertUntilMs how long the alert fires for it: until a day
 	// before the next notification may go out, so that the alert has
@@ -157,7 +170,10 @@ func EvaluateBadMakers(rows []OpenRow, now time.Time, rule BadMakerRule, opts Op
 			ComboBidSz: r.ComboBidSz, ComboAskSz: r.ComboAskSz, ComboSpreadBps: r.ComboSpreadBps, ComboShare: r.ComboShare,
 			SettledEvents: r.CalEvents, HasNet: r.HasNet, NetEdgeBps: r.NetEdgeBps,
 			WingEvents: r.Wing.Events, WingAgainst: r.Wing.Against, WingExpected: r.Wing.Expected, WingHi: r.Wing.Hi,
-			NotifiedMs: notified[r.Series],
+			NotifiedMs:  notified[r.Series],
+			HasNotional: r.WindowDays > 0, WindowNotionalPerDay: r.WindowNotionalPerDay, LifeNotionalPerDay: r.LifeNotionalPerDay,
+			HasQuoters: r.HasQuoters, Quoters: r.Quoters.Count(), TopQuoterShare: r.Quoters.TopShare(),
+			Screen: r.Screen.String(), ScreenCandidate: r.Screen.Candidate,
 		}
 		if r.CaptureOpens > 0 {
 			e.QuotedShare = float64(r.Captured) / float64(r.CaptureOpens)
@@ -204,6 +220,8 @@ func TestCandidate(now time.Time, rule BadMakerRule) BadMakerEval {
 		HasNet: true, NetEdgeBps: 120, NetEdgeLoBps: 35, EdgeOK: true,
 		WingEvents: 40, WingAgainst: 9, WingExpected: 3.1, WingHi: 6, WingOK: true,
 		Candidate: true, NotifiedMs: now.UnixMilli(),
+		HasNotional: true, WindowNotionalPerDay: 4200, LifeNotionalPerDay: 61000,
+		HasQuoters: true, Quoters: 2, TopQuoterShare: 0.82, Screen: "CANDIDATE", ScreenCandidate: true,
 		AlertUntilMs: now.Add(time.Duration(rule.NotifyEveryDays)*24*time.Hour - 24*time.Hour).UnixMilli(),
 	}
 }
@@ -230,10 +248,24 @@ func (b BadMakers) Metrics() []metrics.BadMaker {
 				"wing_against":     float64(e.WingAgainst),
 				"wing_expected":    e.WingExpected,
 				"wing_hi":          e.WingHi,
+				// -1: not known (no notional yet, or never captured)
+				"window_notional_per_day": known(e.HasNotional, e.WindowNotionalPerDay),
+				"life_notional_per_day":   known(e.HasNotional, e.LifeNotionalPerDay),
+				"quoters":                 known(e.HasQuoters, float64(e.Quoters)),
+				"top_quoter_share":        known(e.HasQuoters, e.TopQuoterShare),
+				"screen_candidate":        float64(boolInt(e.ScreenCandidate)),
 			},
 		})
 	}
 	return out
+}
+
+// known is v, or -1 when it is not known.
+func known(ok bool, v float64) float64 {
+	if !ok {
+		return -1
+	}
+	return v
 }
 
 // LoadBadMakers reads bad_makers.json; a missing file is an empty
@@ -301,7 +333,7 @@ func SeriesTitles(dir string) (map[string]string, error) {
 // condition, a * where the condition holds.
 func WriteBadMakers(w io.Writer, b BadMakers) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "series\topens\tcaptured\tquoted\tcap/day\tone quote\tevents\tnet edge [lo]\twing against/exp (hi)\tcandidate\t")
+	fmt.Fprintln(tw, "series\topens\tcaptured\tquoted\tcap/day\tone quote\tevents\tnet edge [lo]\twing against/exp (hi)\tcandidate\twindow $/day\tlife $/day\tquoters (top)\tscreen\t")
 	star := func(ok bool) string {
 		if ok {
 			return "*"
@@ -321,11 +353,13 @@ func WriteBadMakers(w io.Writer, b BadMakers) error {
 		if e.Candidate {
 			cand = "CANDIDATE"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%.0f%%%s\t%.0f%s\t%s%s\t%d%s\t%s%s\t%d/%.1f (%.0f)%s\t%s\t\n",
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%.0f%%%s\t%.0f%s\t%s%s\t%d%s\t%s%s\t%d/%.1f (%.0f)%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			e.Series, e.Opens, e.CaptureOpens,
 			e.QuotedShare*100, star(e.QuotedOK), e.MedianCapacity, star(e.CapacityOK), combo, star(e.OneMakerOK),
 			e.SettledEvents, star(e.EventsOK), net, star(e.EdgeOK),
-			e.WingAgainst, e.WingExpected, e.WingHi, star(e.WingOK), cand)
+			e.WingAgainst, e.WingExpected, e.WingHi, star(e.WingOK), cand,
+			na(e.HasNotional, "%s", dollars(e.WindowNotionalPerDay)), na(e.HasNotional, "%s", dollars(e.LifeNotionalPerDay)),
+			na(e.HasQuoters, "%d (%.0f%%)", e.Quoters, e.TopQuoterShare*100), e.Screen)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

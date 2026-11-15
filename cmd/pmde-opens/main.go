@@ -207,8 +207,12 @@ func badmakers(args []string) {
 		log.Fatal(err)
 	}
 	now := time.Now()
+	quoters, err := opens.LoadQuoters(dir, now.Add(-time.Duration(cfg.BadMaker.WindowDays)*24*time.Hour), now, cfg.Quote)
+	if err != nil {
+		log.Fatal(err)
+	}
 	b := opens.EvaluateBadMakers(rows, now, cfg.BadMaker,
-		opens.Options{Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote}, titles, prev)
+		opens.Options{Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote, Quoters: quoters, Screen: cfg.Screen}, titles, prev)
 	if *testCandidate {
 		b.Series = append([]opens.BadMakerEval{opens.TestCandidate(now, cfg.BadMaker)}, b.Series...)
 	}
@@ -237,7 +241,7 @@ func weekly(args []string) {
 	cfg := loadConfig(*configPath)
 	dir := filepath.Join(*dataDir, "opens")
 	now := time.Now()
-	w, err := opens.LoadWeekly(*dataDir, dir, now, opens.Options{Seed: *seed, Resamples: *resamples, Rule: cfg.Quote, WingInterval: cfg.BadMaker.WingInterval})
+	w, err := opens.LoadWeekly(*dataDir, dir, now, opens.Options{Seed: *seed, Resamples: *resamples, Rule: cfg.Quote, WingInterval: cfg.BadMaker.WingInterval, Screen: cfg.Screen})
 	if err != nil {
 		log.Fatal(err)
 	}
