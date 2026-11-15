@@ -487,7 +487,7 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 		if r.Truncated {
 			opens += "+"
 		}
-		approx := "â‰ˆ"
+		approx := "≈"
 		if r.NotionalExact {
 			approx = ""
 		}
@@ -498,7 +498,7 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 		}
 		name := r.Series
 		if r.Stub {
-			name += " â€ "
+			name += " †"
 		}
 		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%s\t%d\t%d\t%.0f%%\t%.0f%%\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			name, r.OpensPerDay, r.EventsPerDay, opens, r.Events, r.Sampled,
@@ -519,11 +519,11 @@ within the quote rule's spread cap; candles have no sizes, so the rule's minimum
 spread: median opening spread, bps. fit rmse: median RMSE, bps, of a normal-CDF fit to an event's
 opening mids across its rungs (events fitted). All from 1-minute candle closes: to the minute.
 window $/day: notional traded in the capture window: exact (contracts x taker's price) from the
-backfill where the series has rows, else â‰ˆ, estimated from the sampled candles (volume x mean traded
+backfill where the series has rows, else ≈, estimated from the sampled candles (volume x mean traded
 yes price, whole minutes). quoters, top quoter: from the captures on file ("-" for a series never
 captured). screen: as in the report; only captured series can be CANDIDATEs.
-â€ : a stub book: the sampled opens' first two-sided candle, of any width, has a median spread of at
-least 9000 bps (1c/99c), so whatever quoting there is is not a market.
+†: a stub book: at least half the sampled opens got a two-sided book, its median first spread is at
+least 9000 bps (1c/99c), and fewer than half ever got a quote inside the spread cap.
 `)
 	for _, r := range failed {
 		fmt.Fprintf(w, "%s: %s\n", r.Series, r.Err)
