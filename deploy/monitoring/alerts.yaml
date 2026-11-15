@@ -1,5 +1,6 @@
 # Grafana-managed alerting for PMDE, exported from the Grafana Cloud stack
-# (provisioning file format): the "pmde" rule group in folder PMDE, the
+# (provisioning file format): the "pmde" rule group in folder PMDE (with
+# the gas paper trader's verdict rule, gas-paper-verdict), the
 # pmde-email and pmde-bad-maker-email contact points, and the Dec 9 2026
 # FOMC mute timing.
 #
@@ -13,7 +14,7 @@ apiVersion: 1
 groups:
     - orgId: 1
       name: pmde
-      folder: PMDE
+      folder: ""
       interval: 1m
       rules:
         - uid: pmde-metrics-absent
@@ -57,6 +58,566 @@ groups:
           isPaused: false
           notification_settings:
             receiver: pmde-email
+        - uid: pmde-bad-maker
+          title: Kalshi bad-maker candidate
+          condition: Z
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: opens_bad_maker_alert_until_timestamp_seconds{job="pmde-scan"} - time()
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: B
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="quoted_share"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: B
+            - refId: C
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="median_capacity"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: C
+            - refId: D
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_share"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: D
+            - refId: E
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_bid_size"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: E
+            - refId: F
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_ask_size"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: F
+            - refId: G
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_spread_bps"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: G
+            - refId: H
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="settled_events"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: H
+            - refId: I
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="net_edge_bps"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: I
+            - refId: J
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="net_edge_lo_bps"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: J
+            - refId: K
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_against"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: K
+            - refId: L
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_expected"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L
+            - refId: M
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_hi"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: M
+            - refId: "N"
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="capture_opens"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: "N"
+            - refId: O
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_events"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: O
+            - refId: P
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="window_notional_per_day"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: P
+            - refId: Q
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="life_notional_per_day"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: Q
+            - refId: R
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="quoters"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: R
+            - refId: S
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="top_quoter_share"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: S
+            - refId: T
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="screen_candidate"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: T
+            - refId: Z
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: Z
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          keepFiringFor: 15m
+          annotations:
+            description: |-
+                {{ $labels.series }}: {{ $labels.title }}
+                Rule ({{ $labels.thresholds }}), over the last window:
+                1. Qualifying two-sided quote on {{ humanizePercentage $values.B.Value }} of {{ printf "%.0f" $values.N.Value }} captured opens.
+                2. Median daily capacity {{ printf "%.0f" $values.C.Value }} contracts.
+                3. One quote, {{ printf "%g" $values.E.Value }} x {{ printf "%g" $values.F.Value }} contracts {{ printf "%.0f" $values.G.Value }} bps wide, on {{ humanizePercentage $values.D.Value }} of opening quotes.
+                4. {{ printf "%.0f" $values.H.Value }} settled events.
+                5. Net edge {{ printf "%.0f" $values.I.Value }} bps, lower bound {{ printf "%.0f" $values.J.Value }} bps. Wing rungs settling against their opening price: {{ printf "%.0f" $values.K.Value }} against {{ printf "%.1f" $values.L.Value }} expected (interval top {{ printf "%.1f" $values.M.Value }}, {{ printf "%.0f" $values.O.Value }} events).
+                Context (not conditions): window notional {{ if lt $values.P.Value 0.0 }}unknown{{ else }}${{ printf "%.0f" $values.P.Value }}/day{{ end }}, life notional {{ if lt $values.Q.Value 0.0 }}unknown{{ else }}${{ printf "%.0f" $values.Q.Value }}/day{{ end }}; quoters {{ if lt $values.R.Value 0.0 }}unknown (never captured){{ else }}{{ printf "%.0f" $values.R.Value }}, largest {{ humanizePercentage $values.S.Value }} of quoted size{{ end }}; screening band: {{ if eq $values.T.Value 1.0 }}candidate{{ else }}not a candidate{{ end }}.
+            summary: 'Bad-maker candidate: {{ $labels.series }} ({{ $labels.title }}), {{ printf "%.0f" $values.H.Value }} events'
+          labels:
+            service: pmde
+            severity: info
+          isPaused: false
+          notification_settings:
+            receiver: pmde-bad-maker-email
+            group_by:
+                - alertname
+                - series
+            repeat_interval: 30d
+        - uid: gas-paper-verdict
+          title: 'Gas paper trading: 30-day verdict'
+          condition: Z
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_verdict_until_timestamp_seconds{job="integrations/node_exporter"}) - time()
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: D
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_days_settled{job="integrations/node_exporter"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: D
+            - refId: L00
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="model", stat="continues"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L00
+            - refId: L01
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="model", stat="edge_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L01
+            - refId: L02
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="model", stat="lower_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L02
+            - refId: L03
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="model", stat="upper_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L03
+            - refId: L04
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="model", stat="contracts"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L04
+            - refId: L05
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="model", stat="pnl_dollars"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L05
+            - refId: L10
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="bid95", stat="continues"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L10
+            - refId: L11
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="bid95", stat="edge_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L11
+            - refId: L12
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="bid95", stat="lower_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L12
+            - refId: L13
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="bid95", stat="upper_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L13
+            - refId: L14
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="bid95", stat="contracts"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L14
+            - refId: L15
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="bid95", stat="pnl_dollars"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L15
+            - refId: L20
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="mid3050", stat="continues"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L20
+            - refId: L21
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="mid3050", stat="edge_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L21
+            - refId: L22
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="mid3050", stat="lower_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L22
+            - refId: L23
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="mid3050", stat="upper_cents"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L23
+            - refId: L24
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="mid3050", stat="contracts"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L24
+            - refId: L25
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: grafanacloud-prom
+              model:
+                expr: max(gas_paper_ledger{job="integrations/node_exporter", ledger="mid3050", stat="pnl_dollars"})
+                instant: true
+                intervalMs: 1000
+                maxDataPoints: 43200
+                range: false
+                refId: L25
+            - refId: Z
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0
+                        type: gt
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: Z
+                type: threshold
+          noDataState: OK
+          execErrState: Error
+          annotations:
+            description: |-
+                Gas paper trading: verdict after {{ printf "%.0f" $values.D.Value }} settled event days.
+                Rule: a ledger continues only if its mean realized edge per contract is above zero and the lower bound of its 90% bootstrap-by-day interval is above zero.
+
+                model: {{ if eq $values.L00.Value 1.0 }}CONTINUES{{ else }}STOPPED{{ end }}. Edge {{ printf "%+.1f" $values.L01.Value }}c per contract, interval [{{ printf "%+.1f" $values.L02.Value }}c, {{ printf "%+.1f" $values.L03.Value }}c], {{ printf "%.0f" $values.L04.Value }} contracts, P&L ${{ printf "%+.2f" $values.L05.Value }}.
+                bid95: {{ if eq $values.L10.Value 1.0 }}CONTINUES{{ else }}STOPPED{{ end }}. Edge {{ printf "%+.1f" $values.L11.Value }}c per contract, interval [{{ printf "%+.1f" $values.L12.Value }}c, {{ printf "%+.1f" $values.L13.Value }}c], {{ printf "%.0f" $values.L14.Value }} contracts, P&L ${{ printf "%+.2f" $values.L15.Value }}.
+                mid3050: {{ if eq $values.L20.Value 1.0 }}CONTINUES{{ else }}STOPPED{{ end }}. Edge {{ printf "%+.1f" $values.L21.Value }}c per contract, interval [{{ printf "%+.1f" $values.L22.Value }}c, {{ printf "%+.1f" $values.L23.Value }}c], {{ printf "%.0f" $values.L24.Value }} contracts, P&L ${{ printf "%+.2f" $values.L25.Value }}.
+
+                Detail: ssh to the droplet, cat /opt/gas/reports/paper.md
+            summary: 'Gas paper trading: the 30-day verdict is in'
+          labels:
+            service: gas-paper
+            severity: info
+          isPaused: false
+          notification_settings:
+            receiver: pmde-bad-maker-email
+            group_by:
+                - alertname
+            repeat_interval: 30d
         - uid: pmde-book-stale
           title: pmde book stale
           condition: C
@@ -305,226 +866,6 @@ groups:
           isPaused: false
           notification_settings:
             receiver: pmde-email
-            group_by:
-                - alertname
-                - series
-            repeat_interval: 30d
-        - uid: pmde-bad-maker
-          title: Kalshi bad-maker candidate
-          condition: Z
-          data:
-            - refId: A
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: opens_bad_maker_alert_until_timestamp_seconds{job="pmde-scan"} - time()
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: A
-            - refId: B
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="quoted_share"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: B
-            - refId: C
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="median_capacity"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: C
-            - refId: D
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_share"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: D
-            - refId: E
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_bid_size"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: E
-            - refId: F
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_ask_size"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: F
-            - refId: G
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="combo_spread_bps"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: G
-            - refId: H
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="settled_events"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: H
-            - refId: I
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="net_edge_bps"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: I
-            - refId: J
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="net_edge_lo_bps"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: J
-            - refId: K
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_against"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: K
-            - refId: L
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_expected"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: L
-            - refId: M
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_hi"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: M
-            - refId: "N"
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="capture_opens"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: "N"
-            - refId: O
-              relativeTimeRange:
-                from: 600
-                to: 0
-              datasourceUid: grafanacloud-prom
-              model:
-                expr: max without (stat) (opens_bad_maker_stat{job="pmde-scan", stat="wing_events"})
-                instant: true
-                intervalMs: 1000
-                maxDataPoints: 43200
-                range: false
-                refId: O
-            - refId: Z
-              datasourceUid: __expr__
-              model:
-                conditions:
-                    - evaluator:
-                        params:
-                            - 0
-                        type: gt
-                expression: A
-                intervalMs: 1000
-                maxDataPoints: 43200
-                refId: Z
-                type: threshold
-          noDataState: OK
-          execErrState: Error
-          keepFiringFor: 15m
-          annotations:
-            description: |-
-                {{ $labels.series }}: {{ $labels.title }}
-                Rule ({{ $labels.thresholds }}), over the last window:
-                1. Qualifying two-sided quote on {{ humanizePercentage $values.B.Value }} of {{ printf "%.0f" $values.N.Value }} captured opens.
-                2. Median daily capacity {{ printf "%.0f" $values.C.Value }} contracts.
-                3. One quote, {{ printf "%g" $values.E.Value }} x {{ printf "%g" $values.F.Value }} contracts {{ printf "%.0f" $values.G.Value }} bps wide, on {{ humanizePercentage $values.D.Value }} of opening quotes.
-                4. {{ printf "%.0f" $values.H.Value }} settled events.
-                5. Net edge {{ printf "%.0f" $values.I.Value }} bps, lower bound {{ printf "%.0f" $values.J.Value }} bps. Wing rungs settling against their opening price: {{ printf "%.0f" $values.K.Value }} against {{ printf "%.1f" $values.L.Value }} expected (interval top {{ printf "%.1f" $values.M.Value }}, {{ printf "%.0f" $values.O.Value }} events).
-            summary: 'Bad-maker candidate: {{ $labels.series }} ({{ $labels.title }}), {{ printf "%.0f" $values.H.Value }} events'
-          labels:
-            service: pmde
-            severity: info
-          isPaused: false
-          notification_settings:
-            receiver: pmde-bad-maker-email
             group_by:
                 - alertname
                 - series
