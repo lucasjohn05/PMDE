@@ -380,3 +380,107 @@ func TestBackfillHistorical(t *testing.T) {
 		t.Errorf("live endpoints used for an archived market: %q", fake.requests)
 	}
 }
+
+// Notional volume: contracts times the price the taker paid, in the
+// window and over the market's life. A trade after the horizon counts
+// for the life figures only.
+func TestBackfillNotionalVolume(t *testing.T) {
+	tr := func(id string, after time.Duration, yes, count, side string) string {
+		return fmt.Sprintf(`{"trade_id":%q,"ticker":"V-D1-T5","created_time":%q,"yes_price_dollars":%q,"count_fp":%q,"taker_outcome_side":%q}`,
+			id, bfOpen.Add(after).Format(time.RFC3339Nano), yes, count, side)
+	}
+	fake := &backfillFake{
+		markets: map[string]string{"V-D1-T5": settledJSON("V-D1-T5", "V-D1", "no", "0.0000", 5, bfOpen, bfOpen.Add(30*time.Hour))},
+		settled: map[string][]string{"V": {"V-D1-T5"}},
+		trades: map[string]string{"V-D1-T5": `{"cursor":"","trades":[` + strings.Join([]string{
+			tr("c", 2*time.Hour, "0.3000", "5.00", "no"),      // no bought at 70c: $3.50
+			tr("b", 30*time.Second, "0.4000", "10.00", "yes"), // yes bought at 40c: $4.00
+			tr("a", 20*time.Second, "0.4000", "0.50", "yes"),  // half a contract: $0.20
+		}, ",") + `]}`},
+	}
+	b := newBackfill(t, fake, "V")
+	if _, err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r := rowsByMarket(t, b.Dir)["V-D1-T5"]
+	if r.WindowTraded == nil || *r.WindowTraded != 1050 || r.WindowNotional == nil || *r.WindowNotional != 420 {
+		t.Errorf("window: traded %v, notional %v cents; want 1050, 420", deref(r.WindowTraded), deref(r.WindowNotional))
+	}
+	if r.LifeTraded == nil || *r.LifeTraded != 1550 || r.LifeNotional == nil || *r.LifeNotional != 770 || r.LifeTruncated {
+		t.Errorf("life: traded %v, notional %v cents, truncated %v; want 1550, 770", deref(r.LifeTraded), deref(r.LifeNotional), r.LifeTruncated)
+	}
+	// the trade 2h in is past the 1h horizon: not the first trade
+	if r.TradeMs != bfOpen.Add(20*time.Second).UnixMilli() {
+		t.Errorf("first trade at %d", r.TradeMs-bfOpen.UnixMilli())
+	}
+	// one trades request for the whole life
+	if n := fake.count("/markets/trades", ""); n != 1 {
+		t.Errorf("%d trades requests, want 1", n)
+	}
+
+	// A series with its own window takes its trades in it.
+	b2 := newBackfill(t, fake, "V")
+	b2.WindowFor = func(string) time.Duration { return 3 * time.Hour }
+	if _, err := b2.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r = rowsByMarket(t, b2.Dir)["V-D1-T5"]
+	if r.FlowWindowMs != (3*time.Hour).Milliseconds() || *r.WindowNotional != 770 {
+		t.Errorf("series window: %d ms, notional %v", r.FlowWindowMs, deref(r.WindowNotional))
+	}
+}
+
+// Final rows built before the volume fields existed get them, from one
+// trades request each, newest first, VolumeMax a run; nothing else is
+// refetched.
+func TestBackfillAddsVolumeToFinalRows(t *testing.T) {
+	fake := &backfillFake{
+		markets: map[string]string{
+			"W-D1-T1": settledJSON("W-D1-T1", "W-D1", "no", "0.0000", 1, bfOpen, bfOpen.Add(30*time.Hour)),
+			"W-D2-T1": settledJSON("W-D2-T1", "W-D2", "no", "0.0000", 1, bfOpen.Add(24*time.Hour), bfOpen.Add(54*time.Hour)),
+		},
+		settled: map[string][]string{"W": {"W-D1-T1", "W-D2-T1"}},
+		trades: map[string]string{
+			"W-D2-T1": `{"cursor":"","trades":[{"trade_id":"x","ticker":"W-D2-T1","created_time":"` +
+				bfOpen.Add(24*time.Hour+10*time.Second).Format(time.RFC3339) + `","yes_price_dollars":"0.2000","count_fp":"3.00","taker_outcome_side":"yes"}]}`,
+		},
+	}
+	b := newBackfill(t, fake, "W")
+	old := func(market string, open time.Time) OpenRow {
+		return OpenRow{Market: market, Series: "W", Event: strings.TrimSuffix(market, "-T1"), OpenMs: open.UnixMilli(),
+			Result: "no", SettledMs: open.Add(30 * time.Hour).UnixMilli(), SettleBps: intp(0),
+			RuleSpread: DefaultQuoteRule().MaxSpreadBps, RuleSize: DefaultQuoteRule().MinSizeCenti,
+			FlowWindowMs: DefaultConfig().Window.Milliseconds(), WindowTraded: int64p(0)}
+	}
+	if err := storage.WriteJSONL(filepath.Join(b.Dir, backfillFile), []OpenRow{old("W-D1-T1", bfOpen), old("W-D2-T1", bfOpen.Add(24*time.Hour))}); err != nil {
+		t.Fatal(err)
+	}
+	b.VolumeMax = 1
+	stats, err := b.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := rowsByMarket(t, b.Dir)
+	if stats.Built != 0 || stats.Volume != 1 || rows["W-D1-T1"].LifeTraded != nil {
+		t.Errorf("first run: %+v; the older row filled: %v", stats, rows["W-D1-T1"].LifeTraded != nil)
+	}
+	if r := rows["W-D2-T1"]; r.LifeTraded == nil || *r.LifeTraded != 300 || *r.LifeNotional != 60 || *r.WindowNotional != 60 {
+		t.Errorf("newest row: %+v", r)
+	}
+	if n := fake.count("/", "/candlesticks"); n != 0 {
+		t.Errorf("%d candle requests for volume-only rows", n)
+	}
+	if stats, err := b.Run(context.Background()); err != nil || stats.Volume != 1 || rowsByMarket(t, b.Dir)["W-D1-T1"].LifeTraded == nil {
+		t.Errorf("second run: %+v, %v", stats, err)
+	}
+	if stats, _ := b.Run(context.Background()); stats.Volume != 0 || stats.Built != 0 {
+		t.Errorf("third run should do nothing: %+v", stats)
+	}
+}
+
+func deref(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}

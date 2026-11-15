@@ -234,8 +234,8 @@ func TestWriteTextAndCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 3 || len(recs[0]) != 48+30 {
-		t.Fatalf("%d CSV rows of %d columns, want 3 of 78", len(recs), len(recs[0]))
+	if len(recs) != 3 || len(recs[0]) != 54+30 {
+		t.Fatalf("%d CSV rows of %d columns, want 3 of 84", len(recs), len(recs[0]))
 	}
 	col := map[string]int{}
 	for i, h := range recs[0] {
@@ -251,5 +251,22 @@ func TestWriteTextAndCSV(t *testing.T) {
 	}
 	if q := recs[2]; q[col["series"]] != "Q" || q[col["brier"]] != "" || q[col["spread_bps"]] != "" || q[col["d0_n"]] != "0" {
 		t.Errorf("CSV row for Q: %v", q)
+	}
+}
+
+// Notional per day is over the days that have the figure, so rows built
+// before it existed do not dilute it.
+func TestFlowNotionalPerDay(t *testing.T) {
+	day := int64(24 * 3600 * 1000)
+	rows := []OpenRow{
+		{OpenMs: 10 * day, WindowNotional: int64p(30000), LifeNotional: int64p(500000), LifeTraded: int64p(80000)},
+		{OpenMs: 10*day + 3600*1000, WindowNotional: int64p(10000), LifeNotional: int64p(100000), LifeTraded: int64p(20000)},
+		{OpenMs: 11 * day, WindowNotional: int64p(20000), LifeNotional: int64p(300000), LifeTraded: int64p(50000), LifeTruncated: true},
+		{OpenMs: 12 * day}, // built before the figures: not a day of data
+	}
+	f := flow(rows, 3)
+	if f.WindowDays != 2 || f.WindowNotionalPerDay != 300 || f.LifeDays != 2 || f.LifeNotionalPerDay != 4500 ||
+		f.LifeTradedPerDay != 750 || f.LifeTruncated != 1 {
+		t.Errorf("flow %+v", f)
 	}
 }

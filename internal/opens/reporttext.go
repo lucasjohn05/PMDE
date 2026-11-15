@@ -14,6 +14,25 @@ func centi(n int64) string {
 	return strconv.FormatFloat(float64(n)/100, 'f', -1, 64)
 }
 
+// dollars formats a dollar amount for the tables: $840, $12.3k, $1.2M.
+func dollars(v float64) string {
+	switch {
+	case v >= 1e6:
+		return fmt.Sprintf("$%.1fM", v/1e6)
+	case v >= 1e4:
+		return fmt.Sprintf("$%.1fk", v/1e3)
+	default:
+		return fmt.Sprintf("$%.0f", v)
+	}
+}
+
+func geq(b bool) string {
+	if b {
+		return "≥"
+	}
+	return ""
+}
+
 func na(ok bool, format string, args ...any) string {
 	if !ok {
 		return "-"
@@ -25,7 +44,7 @@ func na(ok bool, format string, args ...any) string {
 // calibration table under it.
 func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\tcap/day (ntm/wing)\t$risk/day (ntm/wing)\ttraded/day\topens traded\tquote traded/pulled\t")
+	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\tcap/day (ntm/wing)\t$risk/day (ntm/wing)\ttraded/day\topens traded\tquote traded/pulled\twindow $/day\tlife $/day (contracts)\t")
 	for i, r := range reps {
 		delay := na(r.QuoteDelayN > 0, "%.0fms", r.QuoteDelayMs)
 		if r.QuoteDelayN > 0 && !r.QuoteDelayExact {
@@ -37,7 +56,7 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 		if r.MiscalLowerBound {
 			lb = "≥"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			i+1, r.Series, r.Opens, r.OpensPerDay, r.Quoted, r.Captured, delay,
 			na(r.Sized > 0, "%s", centi(r.BidSizeMode)), na(r.Sized > 0, "%.0f%%", r.BidModeShare*100),
 			na(r.Sized > 0, "%s", centi(r.AskSizeMode)), na(r.Sized > 0, "%.0f%%", r.AskModeShare*100),
@@ -57,7 +76,9 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 			na(r.CapDays > 0, "%.0f (%.0f/%.0f)", r.Dollars, r.NTMDollars, r.WingDollars),
 			na(r.FlowOpens > 0, "%.0f", r.TradedPerDay),
 			na(r.FlowOpens > 0, "%d/%d", r.TradedOpens, r.FlowOpens),
-			na(r.QuoteFlowOpens > 0, "%.0f%%/%.0f%% (%d)", r.TradedShare*100, r.PulledShare*100, r.QuoteFlowOpens))
+			na(r.QuoteFlowOpens > 0, "%.0f%%/%.0f%% (%d)", r.TradedShare*100, r.PulledShare*100, r.QuoteFlowOpens),
+			na(r.WindowDays > 0, "%s", dollars(r.WindowNotionalPerDay)),
+			na(r.LifeDays > 0, "%s%s (%.0f)", geq(r.LifeTruncated > 0), dollars(r.LifeNotionalPerDay), r.LifeTradedPerDay))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -89,6 +110,9 @@ traded/day: contracts traded in the capture window (open_time to the scanner's w
 UTC day. opens traded: opens with any trade in the window, of those whose trades were read. quote
 traded/pulled: of the opening quotes' size (bid + ask), the share traded against and the share pulled
 by the end of the window (captured opens followed through the window); the rest was still resting.
+window $/day: notional traded in the capture window (contracts x the price the taker paid), per UTC day
+with the figure. life $/day: the same over every trade in the markets' lives, with its contracts; the
+market's real size (≥: some markets hit the trades page limit, so a lower bound).
 `)
 	if !deciles {
 		return nil
@@ -129,7 +153,8 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 		"miscal_bps", "miscal_lo_bps", "miscal_hi_bps", "null_miscal_bps", "excess_miscal_bps",
 		"median_mid_bps", "fee_bps", "fee_size", "net_edge_bps", "score", "gross_score",
 		"cap_days", "cap_contracts", "cap_ntm_contracts", "cap_wing_contracts", "risk_dollars", "risk_ntm_dollars", "risk_wing_dollars",
-		"flow_opens", "traded_opens", "traded_per_day", "quote_flow_opens", "quote_traded_share", "quote_pulled_share"}
+		"flow_opens", "traded_opens", "traded_per_day", "quote_flow_opens", "quote_traded_share", "quote_pulled_share",
+		"window_days", "window_notional_per_day", "life_days", "life_traded_per_day", "life_notional_per_day", "life_truncated"}
 	for d := range 10 {
 		header = append(header, fmt.Sprintf("d%d_n", d), fmt.Sprintf("d%d_mean_mid_bps", d), fmt.Sprintf("d%d_realized", d))
 	}
@@ -163,6 +188,9 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 			f(r.CapDays > 0, r.Dollars, 2), f(r.CapDays > 0, r.NTMDollars, 2), f(r.CapDays > 0, r.WingDollars, 2),
 			strconv.Itoa(r.FlowOpens), strconv.Itoa(r.TradedOpens), f(r.FlowOpens > 0, r.TradedPerDay, 2),
 			strconv.Itoa(r.QuoteFlowOpens), f(r.QuoteFlowOpens > 0, r.TradedShare, 4), f(r.QuoteFlowOpens > 0, r.PulledShare, 4),
+			strconv.Itoa(r.WindowDays), f(r.WindowDays > 0, r.WindowNotionalPerDay, 2),
+			strconv.Itoa(r.LifeDays), f(r.LifeDays > 0, r.LifeTradedPerDay, 2), f(r.LifeDays > 0, r.LifeNotionalPerDay, 2),
+			strconv.Itoa(r.LifeTruncated),
 		}
 		for _, dec := range r.Deciles {
 			row = append(row, strconv.Itoa(dec.N), f(dec.N > 0, dec.MeanBps, 1), f(dec.N > 0, dec.Freq, 4))

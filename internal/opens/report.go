@@ -143,6 +143,21 @@ type Flow struct {
 	QuoteFlowOpens int
 	TradedShare    float64
 	PulledShare    float64
+
+	// Notional volume, dollars per UTC day: contracts times the price the
+	// taker paid. Window is the trades in the capture window (what a
+	// taker at the open competes for), Life every trade over the
+	// markets' lives (the market's real size), with LifeTradedPerDay its
+	// contracts. Each is over the UTC days whose opens have the figure
+	// (WindowDays, LifeDays), not the whole span, so rows built before
+	// the figures existed do not dilute them. LifeTruncated counts opens
+	// whose life trades hit the page limit: lower bounds.
+	WindowDays           int
+	WindowNotionalPerDay float64
+	LifeDays             int
+	LifeTradedPerDay     float64
+	LifeNotionalPerDay   float64
+	LifeTruncated        int
 }
 
 // flow computes a series' Flow over days UTC days.
@@ -168,6 +183,30 @@ func flow(rows []OpenRow, days int) Flow {
 	}
 	if size > 0 {
 		f.TradedShare, f.PulledShare = float64(hit)/float64(size), float64(pulled)/float64(size)
+	}
+	winDays, lifeDays := map[int64]bool{}, map[int64]bool{}
+	var winCents, lifeCents, lifeCenti int64
+	for _, r := range rows {
+		if r.WindowNotional != nil {
+			winDays[utcDay(r.OpenMs)] = true
+			winCents += *r.WindowNotional
+		}
+		if r.LifeNotional != nil && r.LifeTraded != nil {
+			lifeDays[utcDay(r.OpenMs)] = true
+			lifeCents += *r.LifeNotional
+			lifeCenti += *r.LifeTraded
+			if r.LifeTruncated {
+				f.LifeTruncated++
+			}
+		}
+	}
+	f.WindowDays, f.LifeDays = len(winDays), len(lifeDays)
+	if f.WindowDays > 0 {
+		f.WindowNotionalPerDay = float64(winCents) / 100 / float64(f.WindowDays)
+	}
+	if f.LifeDays > 0 {
+		f.LifeNotionalPerDay = float64(lifeCents) / 100 / float64(f.LifeDays)
+		f.LifeTradedPerDay = float64(lifeCenti) / 100 / float64(f.LifeDays)
 	}
 	return f
 }

@@ -76,6 +76,7 @@ func backfill(args []string) {
 	dataDir := fs.String("data-dir", "data", "data directory; rows go to its opens/backfill.jsonl")
 	sinceFlag := fs.String("since", "", "take the allowlisted series' markets settled since this UTC date, YYYY-MM-DD (default: 30 days ago)")
 	horizon := fs.Duration("horizon", time.Hour, "how long after a market's open to look for its first two-sided quote and first trade")
+	volumeMax := fs.Int("volume-max", 6000, "fill in notional volume for at most this many already-final rows a run, newest first (one trades request each); 0 for no cap")
 	kalshiAPI := fs.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base")
 	fs.Parse(args)
 
@@ -96,19 +97,21 @@ func backfill(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	b := &opens.Backfill{
-		REST:    &kalshi.REST{Base: *kalshiAPI, Logf: log.Printf},
-		Dir:     filepath.Join(*dataDir, "opens"),
-		Series:  append(slices.Clone(cfg.Series), cfg.BackfillOnly...),
-		Since:   since,
-		Horizon: *horizon,
-		Rule:    cfg.Quote,
-		Window:  cfg.Window,
-		Logf:    log.Printf,
+		REST:      &kalshi.REST{Base: *kalshiAPI, Logf: log.Printf},
+		Dir:       filepath.Join(*dataDir, "opens"),
+		Series:    append(slices.Clone(cfg.Series), cfg.BackfillOnly...),
+		Since:     since,
+		Horizon:   *horizon,
+		Rule:      cfg.Quote,
+		Window:    cfg.Window,
+		WindowFor: cfg.WindowFor,
+		VolumeMax: *volumeMax,
+		Logf:      log.Printf,
 	}
 	log.Printf("quote rule: %v", cfg.Quote)
 	stats, err := b.Run(ctx)
-	log.Printf("%d row(s) in %s: %d fetched this run (%d from captures, %d from candlesticks, %d with no two-sided quote), %d failed",
-		stats.Rows, filepath.Join(b.Dir, "backfill.jsonl"), stats.Built, stats.Captured, stats.Candles, stats.NoQuote, stats.Failed)
+	log.Printf("%d row(s) in %s: %d fetched this run (%d from captures, %d from candlesticks, %d with no two-sided quote), notional volume added to %d final row(s), %d failed",
+		stats.Rows, filepath.Join(b.Dir, "backfill.jsonl"), stats.Built, stats.Captured, stats.Candles, stats.NoQuote, stats.Volume, stats.Failed)
 	if err != nil {
 		log.Fatal(err)
 	}

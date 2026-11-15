@@ -69,6 +69,20 @@ type OpenRow struct {
 	OpenTraded   *int64 `json:"open_traded,omitempty"`
 	OpenPulled   *int64 `json:"open_pulled,omitempty"`
 
+	// Notional volume, in cents: each trade's contracts times the price
+	// its taker paid (the yes price for a yes buyer, the no price for a
+	// no buyer), summed. WindowNotional is the trades in the capture
+	// window, the ones a taker at the open competes for; nil if not read.
+	// LifeTraded (hundredths of a contract) and LifeNotional are every
+	// trade from open_time to the market's close (or to when the row was
+	// built, if it had not closed): the market's real size. LifeTruncated
+	// is true if the trades endpoint hit its page limit, so the life
+	// figures are lower bounds.
+	WindowNotional *int64 `json:"window_notional_cents,omitempty"`
+	LifeTraded     *int64 `json:"life_traded,omitempty"`
+	LifeNotional   *int64 `json:"life_notional_cents,omitempty"`
+	LifeTruncated  bool   `json:"life_truncated,omitempty"`
+
 	// The first trade within the horizon after the open, if any.
 	TradeMs    int64  `json:"trade_ms,omitempty"`
 	TradePrice *int   `json:"trade_price,omitempty"`
@@ -128,8 +142,18 @@ type Backfill struct {
 	Rule QuoteRule
 
 	// Window is the flow window after the open: the scanner's capture
-	// window. Zero means DefaultConfig's.
-	Window time.Duration
+	// window. Zero means DefaultConfig's. WindowFor, if set, gives a
+	// series its own (Config.WindowFor), and takes precedence.
+	Window    time.Duration
+	WindowFor func(series string) time.Duration
+
+	// VolumeSince: final rows settled since then that were built before
+	// the notional-volume fields existed get them added (one trades
+	// request each, nothing else refetched). Zero means Since.
+	// VolumeMax caps how many such rows one run fills, newest first;
+	// zero means no cap.
+	VolumeSince time.Time
+	VolumeMax   int
 
 	Logf func(format string, args ...any)
 
@@ -144,6 +168,7 @@ type BackfillStats struct {
 	Captured int // of those, with the opening quote from a capture
 	Candles  int // of those, with the opening quote from candlesticks
 	NoQuote  int // of those, with no two-sided quote found
+	Volume   int // final rows that only had their notional volume added
 	Failed   int // markets whose fetch failed; they are retried next run
 }
 
@@ -217,15 +242,24 @@ func (b *Backfill) run(ctx context.Context, rows map[string]OpenRow, captured ma
 	if b.Window <= 0 {
 		b.Window = DefaultConfig().Window
 	}
-	// done reports whether a market's row needs nothing more.
-	done := func(ticker string) bool {
+	if b.VolumeSince.IsZero() {
+		b.VolumeSince = b.Since
+	}
+	// final reports whether a market's row is built and settled; done,
+	// whether it needs nothing more, notional volume included.
+	final := func(ticker string) bool {
 		r, ok := rows[ticker]
-		if !ok || r.Result == "" || !r.builtUnder(b.Rule) || r.FlowWindowMs != b.Window.Milliseconds() {
+		if !ok || r.Result == "" || !r.builtUnder(b.Rule) || r.FlowWindowMs != b.window(r.Series).Milliseconds() {
 			return false
 		}
 		_, hasCapture := captured[ticker]
 		return r.CaptureSeen || !hasCapture
 	}
+	needsVolume := func(ticker string) bool {
+		r := rows[ticker]
+		return r.LifeTraded == nil && r.SettledMs >= b.VolumeSince.UnixMilli()
+	}
+	done := func(ticker string) bool { return final(ticker) && !needsVolume(ticker) }
 
 	var cands []candidate
 	seen := map[string]bool{}
@@ -296,10 +330,45 @@ func (b *Backfill) run(ctx context.Context, rows map[string]OpenRow, captured ma
 		}
 	}
 
+	// Rows that are final but for their notional volume take one trades
+	// request each, newest first, at most VolumeMax a run.
+	var volOnly []candidate
+	cands = slices.DeleteFunc(cands, func(c candidate) bool {
+		if final(c.m.Ticker) {
+			volOnly = append(volOnly, c)
+			return true
+		}
+		return false
+	})
+	slices.SortFunc(volOnly, func(a, c candidate) int {
+		return cmp.Or(c.m.Open.Compare(a.m.Open), cmp.Compare(a.m.Ticker, c.m.Ticker))
+	})
+	if b.VolumeMax > 0 && len(volOnly) > b.VolumeMax {
+		b.logf("opens: %d final row(s) lack notional volume; filling the newest %d this run", len(volOnly), b.VolumeMax)
+		volOnly = volOnly[:b.VolumeMax]
+	}
+
 	slices.SortFunc(cands, func(a, c candidate) int {
 		return cmp.Or(cmp.Compare(a.series, c.series), a.m.Open.Compare(c.m.Open), cmp.Compare(a.m.Ticker, c.m.Ticker))
 	})
-	b.logf("opens: backfilling %d market(s)", len(cands))
+	b.logf("opens: backfilling %d market(s), and notional volume for %d final row(s)", len(cands), len(volOnly))
+	for i, c := range volOnly {
+		if ctx.Err() != nil {
+			errs = append(errs, ctx.Err())
+			break
+		}
+		row, err := b.addVolume(ctx, rows[c.m.Ticker], c.m)
+		if err != nil {
+			stats.Failed++
+			b.logf("opens: %s: volume: %v", c.m.Ticker, err)
+			continue
+		}
+		rows[row.Market] = row
+		stats.Volume++
+		if (i+1)%500 == 0 {
+			b.logf("opens: volume for %d of %d", i+1, len(volOnly))
+		}
+	}
 	for i, c := range cands {
 		if ctx.Err() != nil {
 			errs = append(errs, ctx.Err())
@@ -337,7 +406,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 		Rung: m.Rung, StrikeType: m.StrikeType, Floor: m.FloorStrike, Cap: m.CapStrike,
 		OpenMs: m.Open.UnixMilli(), Result: m.Result,
 		RuleSpread: b.Rule.MaxSpreadBps, RuleSize: b.Rule.MinSizeCenti,
-		FlowWindowMs: b.Window.Milliseconds(),
+		FlowWindowMs: b.window(c.series).Milliseconds(),
 	}
 	if m.HasSettlement && m.Result != "" {
 		row.SettleBps = &m.SettlementBps
@@ -352,7 +421,7 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 	historical := !m.Settled.IsZero() && m.Settled.Before(b.cutoff)
 	end := m.Open.Add(horizon)
 
-	flowEnd := m.Open.Add(b.Window).UnixMilli()
+	flowEnd := m.Open.Add(b.window(c.series)).UnixMilli()
 	var events []EventRecord
 	var open opening
 	var captureQuote bool
@@ -396,17 +465,22 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 		}
 	}
 
-	trades, err := b.REST.Trades(ctx, m.Ticker, m.Open.Add(-time.Second), end, historical)
-	if err != nil && !errors.Is(err, kalshi.ErrPageLimit) {
+	// One read of the market's whole life serves the volume, the window
+	// and the first trade. If it hit the page limit it holds the newest
+	// trades, not the first ones, so the horizon is read on its own.
+	life, err := b.REST.Trades(ctx, m.Ticker, m.Open.Add(-time.Second), lifeEnd(m), historical)
+	truncated := errors.Is(err, kalshi.ErrPageLimit)
+	if err != nil && !truncated {
 		return row, err
 	}
-	var inWindow int64
-	for _, t := range trades {
-		if t.Time.UnixMilli() <= flowEnd {
-			inWindow += t.CountCenti
+	trades := life
+	if truncated {
+		if trades, err = b.REST.Trades(ctx, m.Ticker, m.Open.Add(-time.Second), end, historical); err != nil && !errors.Is(err, kalshi.ErrPageLimit) {
+			return row, err
 		}
 	}
-	row.WindowTraded = &inWindow
+	setVolume(&row, life, trades, flowEnd, truncated)
+	trades = slices.DeleteFunc(slices.Clone(trades), func(t kalshi.Trade) bool { return t.Time.After(end) })
 	if captureQuote && open.flowOK {
 		traded, pulled := flowOf(open, trades, flowEnd)
 		row.OpenTraded, row.OpenPulled = &traded, &pulled
@@ -436,6 +510,74 @@ func (b *Backfill) row(ctx context.Context, c candidate, hasCapture bool) (OpenR
 	if before, after, ok := impactFromCandles(cs, first.Time); ok {
 		row.MidBefore, row.MidAfter, row.ImpactSource = &before, &after, SourceCandles
 	}
+	return row, nil
+}
+
+// window is the series' flow window: its own capture window if WindowFor
+// gives one, else Window.
+func (b *Backfill) window(series string) time.Duration {
+	if b.WindowFor != nil {
+		if w := b.WindowFor(series); w > 0 {
+			return w
+		}
+	}
+	if b.Window > 0 {
+		return b.Window
+	}
+	return DefaultConfig().Window
+}
+
+// lifeEnd is the end of a market's trading for the life volume: its
+// close, or now if it has not closed.
+func lifeEnd(m kalshi.Market) time.Time {
+	if now := time.Now(); m.Close.IsZero() || m.Close.After(now) {
+		return now
+	}
+	return m.Close.Add(time.Second)
+}
+
+// setVolume sets a row's window and life volume. life is every trade
+// read over the market's life (possibly truncated); early holds its
+// first trades at least through the window (the same slice unless life
+// was truncated).
+func setVolume(row *OpenRow, life, early []kalshi.Trade, flowEndMs int64, truncated bool) {
+	var winCount, winNotional int64
+	for _, t := range early {
+		if t.Time.UnixMilli() <= flowEndMs {
+			winCount += t.CountCenti
+			winNotional += t.CountCenti * int64(t.TakerBps())
+		}
+	}
+	var lifeCount, lifeNotional int64
+	for _, t := range life {
+		lifeCount += t.CountCenti
+		lifeNotional += t.CountCenti * int64(t.TakerBps())
+	}
+	// hundredths of a contract x bps: 1e6 is one dollar, 1e4 one cent
+	row.WindowTraded = ptr(winCount)
+	row.WindowNotional = ptr((winNotional + 5000) / 10000)
+	row.LifeTraded = ptr(lifeCount)
+	row.LifeNotional = ptr((lifeNotional + 5000) / 10000)
+	row.LifeTruncated = truncated
+}
+
+// addVolume adds the notional volume to a final row: one read of the
+// market's trades, and the window again if that one was truncated.
+func (b *Backfill) addVolume(ctx context.Context, row OpenRow, m kalshi.Market) (OpenRow, error) {
+	historical := !m.Settled.IsZero() && m.Settled.Before(b.cutoff)
+	life, err := b.REST.Trades(ctx, m.Ticker, m.Open.Add(-time.Second), lifeEnd(m), historical)
+	truncated := errors.Is(err, kalshi.ErrPageLimit)
+	if err != nil && !truncated {
+		return row, err
+	}
+	early := life
+	flowEnd := m.Open.Add(b.window(row.Series))
+	if truncated {
+		if early, err = b.REST.Trades(ctx, m.Ticker, m.Open.Add(-time.Second), flowEnd, historical); err != nil && !errors.Is(err, kalshi.ErrPageLimit) {
+			return row, err
+		}
+	}
+	setVolume(&row, life, early, flowEnd.UnixMilli(), truncated)
 	return row, nil
 }
 

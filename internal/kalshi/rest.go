@@ -492,6 +492,15 @@ type Trade struct {
 	TakerYes   bool      // taker_outcome_side == "yes": the taker bought yes
 }
 
+// TakerBps is the price the taker paid per contract: the yes price if
+// the taker bought yes, else the no price (10000 - yes).
+func (t Trade) TakerBps() int {
+	if t.TakerYes {
+		return t.YesBps
+	}
+	return 10000 - t.YesBps
+}
+
 // Trades fetches a market's trades with from <= created_time <= to,
 // oldest first. Kalshi returns trades newest first and has no sort
 // parameter (the order is not documented; it is what the API did in
