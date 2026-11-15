@@ -121,6 +121,11 @@ type SeriesReport struct {
 	// Flow is who trades in the capture window.
 	Flow
 
+	// Quoters is the estimate of who quotes, from the captured books
+	// (Options.Quoters); HasQuoters is false for a series with none.
+	Quoters    Quoters
+	HasQuoters bool
+
 	// Wing is the calibration of the wing rungs (opening mid under 10c
 	// or over 90c).
 	Wing WingCal
@@ -247,6 +252,10 @@ type Options struct {
 	// WingInterval is the central probability of the wing calibration's
 	// interval. Zero means 0.9.
 	WingInterval float64
+
+	// Quoters is LoadQuoters' estimate per series, over the same period
+	// as the rows. Nil leaves the quoter columns blank.
+	Quoters map[string]Quoters
 }
 
 // DefaultResamples is enough for a 90% interval that is stable to a few
@@ -407,6 +416,9 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	}
 	rep.Capacity = capacity(rows)
 	rep.Flow = flow(rows, rep.Days)
+	if q, ok := opts.Quoters[series]; ok && q.Placements > 0 {
+		rep.Quoters, rep.HasQuoters = q, true
+	}
 	return rep
 }
 

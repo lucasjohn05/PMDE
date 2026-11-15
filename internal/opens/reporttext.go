@@ -14,6 +14,15 @@ func centi(n int64) string {
 	return strconv.FormatFloat(float64(n)/100, 'f', -1, 64)
 }
 
+// topQuoter is the largest quoter's share, size and width.
+func topQuoter(r SeriesReport) string {
+	if !r.HasQuoters || r.Quoters.Count() == 0 {
+		return "-"
+	}
+	q := r.Quoters.Quoters[0]
+	return fmt.Sprintf("%.0f%%: %s x %s, %d bps", q.Share*100, centi(q.BidSz), centi(q.AskSz), q.SpreadBps)
+}
+
 // dollars formats a dollar amount for the tables: $840, $12.3k, $1.2M.
 func dollars(v float64) string {
 	switch {
@@ -44,7 +53,7 @@ func na(ok bool, format string, args ...any) string {
 // calibration table under it.
 func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\tcap/day (ntm/wing)\t$risk/day (ntm/wing)\ttraded/day\topens traded\tquote traded/pulled\twindow $/day\tlife $/day (contracts)\t")
+	fmt.Fprintln(tw, "rank\tseries\topens\t/day\tquoted\tcapt\tt→quote\tbid sz\tshare\task sz\tshare\tspread\tfit rmse\timpact\tsettled\tevents\tbrier\tmiscal [90%]\tnull\texcess\tfee\tnet edge\tscore\tgross\tcap/day (ntm/wing)\t$risk/day (ntm/wing)\ttraded/day\topens traded\tquote traded/pulled\twindow $/day\tlife $/day (contracts)\tquoters\ttop quoter\t")
 	for i, r := range reps {
 		delay := na(r.QuoteDelayN > 0, "%.0fms", r.QuoteDelayMs)
 		if r.QuoteDelayN > 0 && !r.QuoteDelayExact {
@@ -56,7 +65,7 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 		if r.MiscalLowerBound {
 			lb = "≥"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%d\t%.1f\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			i+1, r.Series, r.Opens, r.OpensPerDay, r.Quoted, r.Captured, delay,
 			na(r.Sized > 0, "%s", centi(r.BidSizeMode)), na(r.Sized > 0, "%.0f%%", r.BidModeShare*100),
 			na(r.Sized > 0, "%s", centi(r.AskSizeMode)), na(r.Sized > 0, "%.0f%%", r.AskModeShare*100),
@@ -78,7 +87,9 @@ func WriteText(w io.Writer, reps []SeriesReport, deciles bool) error {
 			na(r.FlowOpens > 0, "%d/%d", r.TradedOpens, r.FlowOpens),
 			na(r.QuoteFlowOpens > 0, "%.0f%%/%.0f%% (%d)", r.TradedShare*100, r.PulledShare*100, r.QuoteFlowOpens),
 			na(r.WindowDays > 0, "%s", dollars(r.WindowNotionalPerDay)),
-			na(r.LifeDays > 0, "%s%s (%.0f)", geq(r.LifeTruncated > 0), dollars(r.LifeNotionalPerDay), r.LifeTradedPerDay))
+			na(r.LifeDays > 0, "%s%s (%.0f)", geq(r.LifeTruncated > 0), dollars(r.LifeNotionalPerDay), r.LifeTradedPerDay),
+			na(r.HasQuoters, "%d (+%.0f%% one-off)", r.Quoters.Count(), r.Quoters.OneOffShare*100),
+			topQuoter(r))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -113,6 +124,11 @@ by the end of the window (captured opens followed through the window); the rest 
 window $/day: notional traded in the capture window (contracts x the price the taker paid), per UTC day
 with the figure. life $/day: the same over every trade in the markets' lives, with its contracts; the
 market's real size (≥: some markets hit the trades page limit, so a lower bound).
+quoters: distinct quoters estimated from the captured books: two-sided placements (a bid and an ask
+added within 250ms, meeting the quote rule) grouped by bid size, ask size and width; a group seen in
+two markets or on two days is one quoter, the rest are one-offs (their share of placed size). top
+quoter: the largest one's share of placed size, and its size and width. A guess: Kalshi gives no
+account IDs; see docs/open-scanner.md.
 `)
 	if !deciles {
 		return nil
@@ -154,7 +170,8 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 		"median_mid_bps", "fee_bps", "fee_size", "net_edge_bps", "score", "gross_score",
 		"cap_days", "cap_contracts", "cap_ntm_contracts", "cap_wing_contracts", "risk_dollars", "risk_ntm_dollars", "risk_wing_dollars",
 		"flow_opens", "traded_opens", "traded_per_day", "quote_flow_opens", "quote_traded_share", "quote_pulled_share",
-		"window_days", "window_notional_per_day", "life_days", "life_traded_per_day", "life_notional_per_day", "life_truncated"}
+		"window_days", "window_notional_per_day", "life_days", "life_traded_per_day", "life_notional_per_day", "life_truncated",
+		"quoter_markets", "quoter_placements", "quoters", "one_off_share", "top_quoter_share", "top_quoter_bid_size", "top_quoter_ask_size", "top_quoter_spread_bps"}
 	for d := range 10 {
 		header = append(header, fmt.Sprintf("d%d_n", d), fmt.Sprintf("d%d_mean_mid_bps", d), fmt.Sprintf("d%d_realized", d))
 	}
@@ -192,6 +209,15 @@ func WriteCSV(w io.Writer, reps []SeriesReport) error {
 			strconv.Itoa(r.LifeDays), f(r.LifeDays > 0, r.LifeTradedPerDay, 2), f(r.LifeDays > 0, r.LifeNotionalPerDay, 2),
 			strconv.Itoa(r.LifeTruncated),
 		}
+		top := Quoter{}
+		hasTop := r.HasQuoters && r.Quoters.Count() > 0
+		if hasTop {
+			top = r.Quoters.Quoters[0]
+		}
+		row = append(row, strconv.Itoa(r.Quoters.Markets), strconv.Itoa(r.Quoters.Placements),
+			f(r.HasQuoters, float64(r.Quoters.Count()), 0), f(r.HasQuoters, r.Quoters.OneOffShare, 4),
+			f(r.HasQuoters, r.Quoters.TopShare(), 4), f(hasTop, float64(top.BidSz)/100, 2), f(hasTop, float64(top.AskSz)/100, 2),
+			f(hasTop, float64(top.SpreadBps), 0))
 		for _, dec := range r.Deciles {
 			row = append(row, strconv.Itoa(dec.N), f(dec.N > 0, dec.MeanBps, 1), f(dec.N > 0, dec.Freq, 4))
 		}

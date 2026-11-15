@@ -146,7 +146,11 @@ func report(args []string) {
 	if n := opens.BuiltUnderOtherRule(rows, cfg.Quote); n > 0 {
 		log.Printf("%d of %d rows were built under a different quote rule; their quotes are held to this one, but rerun the backfill to rebuild them", n, len(rows))
 	}
-	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote})
+	quoters, err := opens.LoadQuoters(dir, time.Time{}, time.Now(), cfg.Quote)
+	if err != nil {
+		log.Fatal(err)
+	}
+	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote, Quoters: quoters})
 	noteFees(fees, reps)
 	if err := opens.WriteText(os.Stdout, reps, *deciles); err != nil {
 		log.Fatal(err)

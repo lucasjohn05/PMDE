@@ -507,6 +507,81 @@ series quoted (for 14 days) and per candidate.
   yes at the bid, buying yes at the ask) between the quote and the end
   of the window, and "pulled" for the rest. An open whose capture lost
   its book in the window is left out. The count of opens is in brackets.
+- **window $/day**: notional traded in the capture window: each trade's
+  contracts times the price its taker paid (the yes price for a yes
+  buyer, the no price for a no buyer), per UTC day. The window is the
+  series' own (`series_windows`), so 30 minutes for the gas buckets.
+  This is the flow a taker at the open competes for. CSV:
+  `window_notional_per_day`, `window_days`.
+- **life $/day (contracts)**: the same over every trade from
+  `open_time` to the market's close: the market's real size. `≥` when
+  some markets' trades hit the endpoint's page limit (200 pages of
+  1,000), so the figure is a lower bound. CSV: `life_notional_per_day`,
+  `life_traded_per_day`, `life_days`, `life_truncated`.
+  Both are averaged over the UTC days whose opens have the figure, not
+  the whole span: rows built before 2026-11-14 have neither until the
+  backfill's volume pass (`-volume-max` rows a run, newest first) fills
+  them in.
+- **quoters, top quoter**: see "Quoters" below. CSV: `quoters`,
+  `quoter_markets`, `quoter_placements`, `one_off_share`,
+  `top_quoter_share`, `top_quoter_bid_size`, `top_quoter_ask_size`,
+  `top_quoter_spread_bps`.
+
+## Quoters
+
+Kalshi's book feed carries no account IDs, so who quotes can only be
+inferred. `LoadQuoters` reads the captured book events (every capture
+on file, or the evaluation's window) and:
+
+1. Finds **two-sided placements**: a size added at a yes price and a
+   size added at a no price on the same market within 250ms, bid below
+   ask. In the captures of 2026-11-13/14 most such pairs were under 50ms
+   apart; past 250ms they thin out. Only placements meeting the quote
+   rule count (spread at most `quote.max_spread_bps`, both sides at
+   least `quote.min_size`). A record with a hole ends the market.
+2. Groups them by **(bid size, ask size, width)**. A group seen on at
+   least two markets or two UTC days is one **quoter**; the rest are
+   **one-offs**, unattributed, reported as a share of placed size.
+3. Ranks quoters by placed size (bid plus ask, summed over placements).
+   The largest one's share of all placed size, one-offs included, is
+   the **top quoter** share.
+
+**How reliable this is.** It is a heuristic, and its errors go both
+ways:
+
+- One quoter can show up as several. A maker who sizes or widens by
+  rung (wider in the wings), or re-sizes between days, splits into one
+  group per combination. So the count is an upper bound for scripted
+  makers who vary their quote, and the top share understates them.
+- Several quoters can show up as one. Round sizes and widths (10 x 10 at
+  4c, 100 x 100 at 2c) are common choices; two makers who both use one
+  are merged. So the top share can overstate one maker's grip.
+- One-sided quoting is invisible: a maker who adds the bid and the ask
+  more than 250ms apart, or only ever quotes one side, is not counted.
+- It sees only what was captured: the first `window` after each open
+  (30m for the gas buckets, 60s for the rest), for series on the
+  allowlist, since the captures began (2026-11-13). Later requotes, and
+  the hours after, are not in it. Two or three days of captures is a
+  small sample.
+- Placement timing (median delay after open) is reported per quoter but
+  not used to split groups: one maker walking events one by one would
+  otherwise be split by its own walk.
+
+Read the count as "how many distinct scripted quotes", not "how many
+firms".
+
+## Quote staleness: not built
+
+The idea was to measure how often the top of book fails to move within
+5 minutes of a public input changing. It needs an intraday input that
+PMDE already reads for the series in question. PMDE reads Kalshi and
+Polymarket books for its pairs (`pairs.yaml`: KXFEDDECISION only), and
+nothing else; none of the 105 scanner series is paired. The gas
+ladders' input (AAA) changes once a day, at about 03:20 ET, outside every
+capture window; the weather (NWS), oil (futures), FX and earthquake
+series' inputs are not read by PMDE at all. So no series is covered and
+nothing was built. It would take a new input feed per series, which is
+a new dependency or data source, out of scope here.
 
 ### The noise floor under miscal
 
@@ -700,6 +775,8 @@ when checked).
   so an open within the first poll after a restart can be missed.
 - No dashboard panels for the `opens_*` metrics, and no alerts on them
   apart from the new-series and bad-maker ones (they are scraped).
+- No quote-staleness measure: PMDE reads no intraday input for any
+  scanner series (see "Quote staleness").
 - The series list snapshot is not pruned.
 
 ## Live runs (2026-11-13 UTC)
