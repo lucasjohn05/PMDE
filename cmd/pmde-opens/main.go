@@ -317,6 +317,7 @@ func triage(args []string) {
 	sample := fs.Int("sample-events", 20, "events per series whose candles are read, evenly spaced over the period; -1 for every event")
 	minShare := fs.Float64("min-quoted-share", -1, "if 0 or more: write the series with at least this share (0-1) of opens quoted two-sided in the first minute to -out, as a scanner config")
 	outPath := fs.String("out", "opens-triage.yaml", "where -min-quoted-share writes the config")
+	csvPath := fs.String("csv", "", "also write the rows as CSV here")
 	kalshiAPI := fs.String("kalshi-api", kalshi.RESTBase, "Kalshi REST base")
 	fs.Parse(args)
 
@@ -384,6 +385,18 @@ func triage(args []string) {
 		log.Fatal(err)
 	}
 	out.Flush()
+	if *csvPath != "" {
+		f, err := os.Create(*csvPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := opens.WriteTriageCSV(f, rows); err != nil {
+			log.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			log.Fatal(err)
+		}
+	}
 	if runErr != nil {
 		// What was fetched is on file; the table above covers the series
 		// reached. No allowlist from a partial run.

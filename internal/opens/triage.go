@@ -3,12 +3,14 @@ package opens
 import (
 	"cmp"
 	"context"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -470,7 +472,7 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 		if r.Truncated {
 			opens += "+"
 		}
-		approx := "≈"
+		approx := "â‰ˆ"
 		if r.NotionalExact {
 			approx = ""
 		}
@@ -481,7 +483,7 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 		}
 		name := r.Series
 		if r.Stub {
-			name += " †"
+			name += " â€ "
 		}
 		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%s\t%d\t%d\t%.0f%%\t%.0f%%\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			name, r.OpensPerDay, r.EventsPerDay, opens, r.Events, r.Sampled,
@@ -502,10 +504,10 @@ within the quote rule's spread cap; candles have no sizes, so the rule's minimum
 spread: median opening spread, bps. fit rmse: median RMSE, bps, of a normal-CDF fit to an event's
 opening mids across its rungs (events fitted). All from 1-minute candle closes: to the minute.
 window $/day: notional traded in the capture window: exact (contracts x taker's price) from the
-backfill where the series has rows, else ≈, estimated from the sampled candles (volume x mean traded
+backfill where the series has rows, else â‰ˆ, estimated from the sampled candles (volume x mean traded
 yes price, whole minutes). quoters, top quoter: from the captures on file ("-" for a series never
 captured). screen: as in the report; only captured series can be CANDIDATEs.
-†: a stub book: the sampled opens' first two-sided candle, of any width, has a median spread of at
+â€ : a stub book: the sampled opens' first two-sided candle, of any width, has a median spread of at
 least 9000 bps (1c/99c), so whatever quoting there is is not a market.
 `)
 	for _, r := range failed {
@@ -604,4 +606,40 @@ func Candidates(dir string, frequencies []string) (series []kalshi.Series, day s
 	}
 	slices.SortFunc(series, func(a, b kalshi.Series) int { return cmp.Compare(a.Ticker, b.Ticker) })
 	return series, day, nil
+}
+
+// WriteTriageCSV writes the triage rows as CSV, one per series in the
+// rows' order, failures included with their error.
+func WriteTriageCSV(w io.Writer, rows []TriageRow) error {
+	cw := csv.NewWriter(w)
+	header := []string{"series", "opens", "events", "days", "opens_per_day", "events_per_day", "truncated",
+		"sampled", "sampled_events", "quoted_first_minute", "quoted", "spread_bps", "fit_events", "fit_rmse_bps",
+		"raw_quoted", "raw_spread_bps", "stub", "window_notional_per_day", "has_notional", "notional_exact",
+		"quoter_markets", "quoter_placements", "quoters", "one_off_share", "top_quoter_share",
+		"top_quoter_bid_size", "top_quoter_ask_size", "top_quoter_spread_bps", "screen_candidate", "screen", "err"}
+	if err := cw.Write(header); err != nil {
+		return err
+	}
+	f := func(v float64, prec int) string { return strconv.FormatFloat(v, 'f', prec, 64) }
+	for _, r := range rows {
+		var top Quoter
+		if r.HasQuoters && r.Quoters.Count() > 0 {
+			top = r.Quoters.Quoters[0]
+		}
+		rec := []string{r.Series, strconv.Itoa(r.Opens), strconv.Itoa(r.Events), strconv.Itoa(r.Days),
+			f(r.OpensPerDay, 3), f(r.EventsPerDay, 3), strconv.FormatBool(r.Truncated),
+			strconv.Itoa(r.Sampled), strconv.Itoa(r.SampledEvents), f(r.QuotedFirstMinute, 4), f(r.Quoted, 4),
+			f(r.SpreadBps, 1), strconv.Itoa(r.FitEvents), f(r.FitRMSEBps, 1),
+			strconv.Itoa(r.RawQuoted), f(r.RawSpreadBps, 1), strconv.FormatBool(r.Stub),
+			f(r.WindowNotionalPerDay, 2), strconv.FormatBool(r.HasNotional), strconv.FormatBool(r.NotionalExact),
+			strconv.Itoa(r.Quoters.Markets), strconv.Itoa(r.Quoters.Placements), strconv.Itoa(r.Quoters.Count()),
+			f(r.Quoters.OneOffShare, 4), f(r.Quoters.TopShare(), 4),
+			f(float64(top.BidSz)/100, 2), f(float64(top.AskSz)/100, 2), strconv.Itoa(top.SpreadBps),
+			strconv.FormatBool(r.Screen.Candidate), r.Screen.String(), r.Err}
+		if err := cw.Write(rec); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
 }

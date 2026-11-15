@@ -306,3 +306,15 @@ func TestCandleRowRawSpread(t *testing.T) {
 		t.Errorf("no book: raw %v", *r.RawSpread)
 	}
 }
+
+func TestWriteTriageCSV(t *testing.T) {
+	var b bytes.Buffer
+	rows := []TriageRow{{Series: "A", Opens: 3, Stub: true, Screen: Screen{Unknown: []string{"quoters"}}}, {Series: "B", Err: "no markets"}}
+	if err := WriteTriageCSV(&b, rows); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[1], "A,3,") || !strings.Contains(lines[1], ",true,") || !strings.HasSuffix(lines[2], ",no markets") {
+		t.Errorf("csv:\n%s", b.String())
+	}
+}
