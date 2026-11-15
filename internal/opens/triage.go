@@ -105,6 +105,14 @@ type TriageRow struct {
 	FitEvents  int
 	FitRMSEBps float64 // median over the sampled events with at least 3 quoted rungs
 
+	// RawSpreadBps is the median spread of the sampled opens' first
+	// two-sided candle of any width, over RawQuoted opens that had one.
+	// Stub is true when that is at least stubSpreadBps: the "quotes" are
+	// a 1c/99c stub book, not a market.
+	RawQuoted    int
+	RawSpreadBps float64
+	Stub         bool
+
 	// Window notional per day (dollars): exact from the backfill's rows
 	// when NotionalExact, else estimated from the sampled candles.
 	WindowNotionalPerDay float64
@@ -318,6 +326,14 @@ func (t *Triage) series(ctx context.Context, series string, since time.Time, hor
 	}
 
 	row.Sampled = len(rows)
+	var raw []float64
+	for _, r := range rows {
+		if r.RawSpread != nil {
+			raw = append(raw, float64(*r.RawSpread))
+		}
+	}
+	row.RawQuoted, row.RawSpreadBps = len(raw), median(raw)
+	row.Stub = len(raw) > 0 && row.RawSpreadBps >= stubSpreadBps
 	var spreads []float64
 	quoted, firstMinute := 0, 0
 	rungs := map[string][]OpenRow{}
@@ -386,6 +402,10 @@ func setCandleNotional(r *OpenRow, candles []kalshi.Candle, window time.Duration
 	r.WindowNotional, r.NotionalFromCandles = ptr(cents), true
 }
 
+// stubSpreadBps is where a first quote is a stub book: 1c bid, 99c ask
+// is 9800 bps; 9000 leaves room for 5c/95c stubs.
+const stubSpreadBps = 9000
+
 func boolInt(b bool) int {
 	if b {
 		return 1
@@ -411,6 +431,9 @@ func candleRow(series string, m kalshi.Market, candles []kalshi.Candle, rule Quo
 		row.SettledMs = m.Settled.UnixMilli()
 	}
 	for _, c := range candles {
+		if c.TwoSided() && row.RawSpread == nil {
+			row.RawSpread = ptr(c.AskClose - c.BidClose)
+		}
 		if c.TwoSided() && rule.MeetsSpread(c.BidClose, c.AskClose) {
 			row.Source, row.QuoteMs = SourceCandles, c.End*1000
 			row.Bid, row.Ask, row.Mid = &c.BidClose, &c.AskClose, ptr(mid(c.BidClose, c.AskClose))
@@ -456,8 +479,12 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 			q := r.Quoters.Quoters[0]
 			top = fmt.Sprintf("%.0f%%: %s x %s, %d bps", q.Share*100, centi(q.BidSz), centi(q.AskSz), q.SpreadBps)
 		}
+		name := r.Series
+		if r.Stub {
+			name += " †"
+		}
 		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%s\t%d\t%d\t%.0f%%\t%.0f%%\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
-			r.Series, r.OpensPerDay, r.EventsPerDay, opens, r.Events, r.Sampled,
+			name, r.OpensPerDay, r.EventsPerDay, opens, r.Events, r.Sampled,
 			r.QuotedFirstMinute*100, r.Quoted*100,
 			na(r.Quoted > 0, "%.0f", r.SpreadBps), na(r.FitEvents > 0, "%.0f (%d)", r.FitRMSEBps, r.FitEvents),
 			na(r.HasNotional, "%s%s", approx, dollars(r.WindowNotionalPerDay)),
@@ -478,6 +505,8 @@ window $/day: notional traded in the capture window: exact (contracts x taker's 
 backfill where the series has rows, else ≈, estimated from the sampled candles (volume x mean traded
 yes price, whole minutes). quoters, top quoter: from the captures on file ("-" for a series never
 captured). screen: as in the report; only captured series can be CANDIDATEs.
+†: a stub book: the sampled opens' first two-sided candle, of any width, has a median spread of at
+least 9000 bps (1c/99c), so whatever quoting there is is not a market.
 `)
 	for _, r := range failed {
 		fmt.Fprintf(w, "%s: %s\n", r.Series, r.Err)

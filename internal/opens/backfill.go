@@ -89,6 +89,10 @@ type OpenRow struct {
 	// window. Backfill rows never set it.
 	NotionalFromCandles bool `json:"notional_from_candles,omitempty"`
 
+	// RawSpread is a triage row's first two-sided candle close of any
+	// width (no spread cap): what tells a 1c/99c stub book from no book.
+	RawSpread *int `json:"raw_spread_bps,omitempty"`
+
 	// The first trade within the horizon after the open, if any.
 	TradeMs    int64  `json:"trade_ms,omitempty"`
 	TradePrice *int   `json:"trade_price,omitempty"`

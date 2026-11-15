@@ -287,3 +287,22 @@ func TestCandidates(t *testing.T) {
 		t.Errorf("%d candidates with no filter, want 3 (the unsafe ticker left out)", len(all))
 	}
 }
+
+// A 1c/99c stub book is not a quote under the rule, but its width is
+// kept, so triage can tell a stub book from no book.
+func TestCandleRowRawSpread(t *testing.T) {
+	m := kalshi.Market{Ticker: "S-1-A", Event: "S-1", Open: time.Unix(1_800_000_000, 0)}
+	stub := []kalshi.Candle{{End: 1_800_000_060, BidClose: 100, AskClose: 9900, HasBid: true, HasAsk: true}}
+	r := candleRow("S", m, stub, DefaultQuoteRule())
+	if r.Mid != nil || r.RawSpread == nil || *r.RawSpread != 9800 {
+		t.Errorf("stub: mid %v raw %v", r.Mid, r.RawSpread)
+	}
+	real := append(stub, kalshi.Candle{End: 1_800_000_120, BidClose: 4400, AskClose: 4800, HasBid: true, HasAsk: true})
+	r = candleRow("S", m, real, DefaultQuoteRule())
+	if r.Mid == nil || *r.Mid != 4600 || *r.RawSpread != 9800 {
+		t.Errorf("stub then a quote: mid %v raw %v", r.Mid, r.RawSpread)
+	}
+	if r := candleRow("S", m, nil, DefaultQuoteRule()); r.RawSpread != nil {
+		t.Errorf("no book: raw %v", *r.RawSpread)
+	}
+}
