@@ -98,8 +98,15 @@ func TestMarketsHistoricalPath(t *testing.T) {
 	if _, err := r.Markets(context.Background(), MarketsQuery{Series: "S", Status: "settled", Historical: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(got, "/historical/markets?") || strings.Contains(got, "status=") {
-		t.Errorf("historical query was %q; want /historical/markets with no status filter", got)
+	if !strings.HasPrefix(got, "/historical/markets?") || strings.Contains(got, "status=") || strings.Contains(got, "mve_filter") {
+		t.Errorf("historical query was %q; want /historical/markets with no status filter and no mve_filter", got)
+	}
+	// Tickers on the historical endpoint: Kalshi rejects them with mve_filter.
+	if _, err := r.Markets(context.Background(), MarketsQuery{Tickers: []string{"A", "B"}, Historical: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "tickers=A%2CB") || strings.Contains(got, "mve_filter") {
+		t.Errorf("historical tickers query was %q", got)
 	}
 }
 

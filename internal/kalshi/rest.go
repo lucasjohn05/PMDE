@@ -413,19 +413,24 @@ type MarketsQuery struct {
 
 	// Historical reads GET /historical/markets instead: markets settled
 	// before the cutoff GET /historical/cutoff reports. It takes Series
-	// and Tickers only.
+	// and Tickers only, and no mve_filter: Kalshi answers 400 ("tickers,
+	// event_ticker, series_ticker, and mve_filter filters are mutually
+	// exclusive") to either with it.
 	Historical bool
 }
 
 // Markets fetches every page of GET /markets (or /historical/markets)
-// matching mq. Multivariate (combo) markets are excluded. A market that
+// matching mq. Multivariate (combo) markets are excluded on the live
+// endpoint; the historical one cannot filter them. A market that
 // fails to decode is skipped and logged, so one odd market does not
 // fail the scan.
 func (r *REST) Markets(ctx context.Context, mq MarketsQuery) ([]Market, error) {
-	q := url.Values{"limit": {"1000"}, "mve_filter": {"exclude"}}
+	q := url.Values{"limit": {"1000"}}
 	path := "/markets"
 	if mq.Historical {
 		path = "/historical/markets"
+	} else {
+		q.Set("mve_filter", "exclude")
 	}
 	if mq.Series != "" {
 		q.Set("series_ticker", mq.Series)
