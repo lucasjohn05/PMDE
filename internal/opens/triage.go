@@ -109,8 +109,12 @@ type TriageRow struct {
 
 	// RawSpreadBps is the median spread of the sampled opens' first
 	// two-sided candle of any width, over RawQuoted opens that had one.
-	// Stub is true when that is at least stubSpreadBps: the "quotes" are
-	// a 1c/99c stub book, not a market.
+	// Stub is true when the quoting there is is a stub book: at least
+	// half the sampled opens got a two-sided book, its median first
+	// spread is at least stubSpreadBps (1c/99c), and fewer than half ever
+	// got a quote inside the spread cap. Penny-order scripts post stubs
+	// first on many series that are quoted properly a minute later; those
+	// are not stubs.
 	RawQuoted    int
 	RawSpreadBps float64
 	Stub         bool
@@ -335,7 +339,7 @@ func (t *Triage) series(ctx context.Context, series string, since time.Time, hor
 		}
 	}
 	row.RawQuoted, row.RawSpreadBps = len(raw), median(raw)
-	row.Stub = len(raw) > 0 && row.RawSpreadBps >= stubSpreadBps
+	row.Stub = 2*len(raw) >= len(rows) && len(raw) > 0 && row.RawSpreadBps >= stubSpreadBps && 2*quotedRows(rows) < len(rows)
 	var spreads []float64
 	quoted, firstMinute := 0, 0
 	rungs := map[string][]OpenRow{}
@@ -402,6 +406,17 @@ func setCandleNotional(r *OpenRow, candles []kalshi.Candle, window time.Duration
 		}
 	}
 	r.WindowNotional, r.NotionalFromCandles = ptr(cents), true
+}
+
+// quotedRows counts rows with a quote inside the rule.
+func quotedRows(rows []OpenRow) int {
+	n := 0
+	for _, r := range rows {
+		if r.Mid != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // stubSpreadBps is where a first quote is a stub book: 1c bid, 99c ask

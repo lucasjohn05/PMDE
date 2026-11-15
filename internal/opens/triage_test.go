@@ -318,3 +318,28 @@ func TestWriteTriageCSV(t *testing.T) {
 		t.Errorf("csv:\n%s", b.String())
 	}
 }
+
+// † is a series quoted only by stubs, not one whose stubs come first.
+func TestTriageStubFlag(t *testing.T) {
+	stub := OpenRow{RawSpread: intp(9800)}
+	real := OpenRow{RawSpread: intp(9800), Mid: intp(4600)}
+	for name, c := range map[string]struct {
+		rows []OpenRow
+		want bool
+	}{
+		"stubs only":            {[]OpenRow{stub, stub, stub, {}}, true},
+		"stubs, then real":      {[]OpenRow{real, real, stub, {}}, false},
+		"mostly no book at all": {[]OpenRow{stub, {}, {}, {}, {}}, false},
+	} {
+		raw := 0
+		for _, r := range c.rows {
+			if r.RawSpread != nil {
+				raw++
+			}
+		}
+		got := 2*raw >= len(c.rows) && raw > 0 && 9800 >= stubSpreadBps && 2*quotedRows(c.rows) < len(c.rows)
+		if got != c.want {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+}
