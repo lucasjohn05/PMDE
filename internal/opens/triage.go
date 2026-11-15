@@ -60,6 +60,15 @@ type Triage struct {
 	// so only its spread cap applies. Zero means DefaultQuoteRule.
 	Rule QuoteRule
 
+	// Screen is the screening band; zero means DefaultScreenRule.
+	// WindowFor is each series' capture window, for the window notional
+	// (nil means DefaultConfig's). Window notional comes from the
+	// backfill's rows where the series has them (exact), else from the
+	// sampled candles (an estimate); quoters come from the captures on
+	// file, so only captured series can be candidates.
+	Screen    ScreenRule
+	WindowFor func(series string) time.Duration
+
 	Logf func(format string, args ...any)
 }
 
@@ -95,6 +104,18 @@ type TriageRow struct {
 	SpreadBps  float64 // median opening spread
 	FitEvents  int
 	FitRMSEBps float64 // median over the sampled events with at least 3 quoted rungs
+
+	// Window notional per day (dollars): exact from the backfill's rows
+	// when NotionalExact, else estimated from the sampled candles.
+	WindowNotionalPerDay float64
+	HasNotional          bool
+	NotionalExact        bool
+
+	// Quoters from the captures on file; HasQuoters false without any.
+	Quoters    Quoters
+	HasQuoters bool
+
+	Screen Screen
 
 	Err string // why the series could not be triaged, if it could not
 }
@@ -148,12 +169,42 @@ func (t *Triage) Run(ctx context.Context) ([]TriageRow, error) {
 		return storage.WriteJSONL(path, rows)
 	}
 
+	backfilled, err := LoadRows(t.Dir)
+	if err != nil {
+		return nil, err
+	}
+	bySeries := map[string][]OpenRow{}
+	for _, r := range backfilled {
+		bySeries[r.Series] = append(bySeries[r.Series], r)
+	}
+	quoters, err := LoadQuoters(t.Dir, time.Time{}, time.Now(), t.Rule)
+	if err != nil {
+		return nil, err
+	}
+	rule := t.Screen
+	if rule == (ScreenRule{}) {
+		rule = DefaultScreenRule()
+	}
+
 	var out []TriageRow
 	for i, series := range t.Series {
 		if ctx.Err() != nil {
 			return out, errors.Join(ctx.Err(), save())
 		}
 		row, fetched := t.series(ctx, series, since, horizon, sample, have)
+		if row.Err == "" {
+			if f := flow(bySeries[series], 0); f.WindowDays > 0 {
+				row.WindowNotionalPerDay, row.HasNotional, row.NotionalExact = f.WindowNotionalPerDay, true, true
+			}
+			if q, ok := quoters[series]; ok && q.Placements > 0 {
+				row.Quoters, row.HasQuoters = q, true
+			}
+			row.Screen = rule.Evaluate(ScreenInputs{
+				WindowNotional: row.WindowNotionalPerDay, HasNotional: row.HasNotional,
+				TopQuoterShare: row.Quoters.TopShare(), HasQuoters: row.HasQuoters,
+				SpreadBps: row.SpreadBps, HasSpread: row.Quoted > 0,
+			})
+		}
 		out = append(out, row)
 		if row.Err != "" {
 			t.logf("opens: triage %s: %s", series, row.Err)
@@ -257,6 +308,7 @@ func (t *Triage) series(ctx context.Context, series string, since time.Time, hor
 				}
 				for _, m := range chunk {
 					r := candleRow(series, m, candles[m.Ticker], t.Rule)
+					setCandleNotional(&r, candles[m.Ticker], t.window(series))
 					have[m.Ticker] = r
 					rows = append(rows, r)
 					fetched++
@@ -292,7 +344,46 @@ func (t *Triage) series(ctx context.Context, series string, since time.Time, hor
 		}
 	}
 	row.FitEvents, row.FitRMSEBps = len(rmses), median(rmses)
+
+	// The candle estimate of window notional, per sampled open times
+	// opens per day; replaced in Run by the exact figure where the
+	// backfill has one.
+	var cents int64
+	n := 0
+	for _, r := range rows {
+		if r.WindowNotional != nil && r.NotionalFromCandles {
+			cents += *r.WindowNotional
+			n++
+		}
+	}
+	if n > 0 {
+		row.WindowNotionalPerDay, row.HasNotional = float64(cents)/100/float64(n)*row.OpensPerDay, true
+	}
 	return row, fetched
+}
+
+func (t *Triage) window(series string) time.Duration {
+	if t.WindowFor != nil {
+		if w := t.WindowFor(series); w > 0 {
+			return w
+		}
+	}
+	return DefaultConfig().Window
+}
+
+// setCandleNotional estimates a row's window notional from its 1-minute
+// candles: volume times the mean traded yes price, over the candles that
+// end within the window (rounded up to whole minutes; a window under a
+// minute takes the first candle).
+func setCandleNotional(r *OpenRow, candles []kalshi.Candle, window time.Duration) {
+	end := r.OpenMs/1000 + int64(max(window, time.Minute)/time.Second)
+	var cents int64
+	for _, c := range candles {
+		if c.End <= end && c.HasMean {
+			cents += c.VolumeCenti * int64(c.MeanBps) / 10000
+		}
+	}
+	r.WindowNotional, r.NotionalFromCandles = ptr(cents), true
 }
 
 func boolInt(b bool) int {
@@ -345,7 +436,7 @@ func SortTriage(rows []TriageRow) {
 // WriteTriage prints one line per series.
 func WriteTriage(w io.Writer, rows []TriageRow) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "series\topens/day\tevents/day\topens\tevents\tsampled\tquoted 1m\tquoted\tspread\tfit rmse\t")
+	fmt.Fprintln(tw, "series\topens/day\tevents/day\topens\tevents\tsampled\tquoted 1m\tquoted\tspread\tfit rmse\twindow $/day\tquoters\ttop quoter\tscreen\t")
 	var failed []TriageRow
 	for _, r := range rows {
 		if r.Err != "" {
@@ -356,10 +447,21 @@ func WriteTriage(w io.Writer, rows []TriageRow) error {
 		if r.Truncated {
 			opens += "+"
 		}
-		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%s\t%d\t%d\t%.0f%%\t%.0f%%\t%s\t%s\t\n",
+		approx := "≈"
+		if r.NotionalExact {
+			approx = ""
+		}
+		top := "-"
+		if r.HasQuoters && r.Quoters.Count() > 0 {
+			q := r.Quoters.Quoters[0]
+			top = fmt.Sprintf("%.0f%%: %s x %s, %d bps", q.Share*100, centi(q.BidSz), centi(q.AskSz), q.SpreadBps)
+		}
+		fmt.Fprintf(tw, "%s\t%.1f\t%.1f\t%s\t%d\t%d\t%.0f%%\t%.0f%%\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
 			r.Series, r.OpensPerDay, r.EventsPerDay, opens, r.Events, r.Sampled,
 			r.QuotedFirstMinute*100, r.Quoted*100,
-			na(r.Quoted > 0, "%.0f", r.SpreadBps), na(r.FitEvents > 0, "%.0f (%d)", r.FitRMSEBps, r.FitEvents))
+			na(r.Quoted > 0, "%.0f", r.SpreadBps), na(r.FitEvents > 0, "%.0f (%d)", r.FitRMSEBps, r.FitEvents),
+			na(r.HasNotional, "%s%s", approx, dollars(r.WindowNotionalPerDay)),
+			na(r.HasQuoters, "%d", r.Quoters.Count()), top, r.Screen.String())
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -372,6 +474,10 @@ events, evenly spaced). quoted 1m: share of sampled opens with a two-sided quote
 within the quote rule's spread cap; candles have no sizes, so the rule's minimum size is not checked.
 spread: median opening spread, bps. fit rmse: median RMSE, bps, of a normal-CDF fit to an event's
 opening mids across its rungs (events fitted). All from 1-minute candle closes: to the minute.
+window $/day: notional traded in the capture window: exact (contracts x taker's price) from the
+backfill where the series has rows, else ≈, estimated from the sampled candles (volume x mean traded
+yes price, whole minutes). quoters, top quoter: from the captures on file ("-" for a series never
+captured). screen: as in the report; only captured series can be CANDIDATEs.
 `)
 	for _, r := range failed {
 		fmt.Fprintf(w, "%s: %s\n", r.Series, r.Err)

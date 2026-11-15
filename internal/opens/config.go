@@ -71,6 +71,10 @@ type Config struct {
 
 	// BadMaker is when pmde-opens badmakers flags a series.
 	BadMaker BadMakerRule
+
+	// Screen is the screening band the report and triage flag
+	// candidates with (see ScreenRule).
+	Screen ScreenRule
 }
 
 // SeriesWindow is one series_windows entry.
@@ -104,6 +108,7 @@ func DefaultConfig() Config {
 		SeriesPoll:       15 * time.Minute,
 		Quote:            DefaultQuoteRule(),
 		BadMaker:         DefaultBadMakerRule(),
+		Screen:           DefaultScreenRule(),
 	}
 }
 
@@ -128,6 +133,12 @@ type configFile struct {
 		MaxSpreadBps *int     `yaml:"max_spread_bps"`
 		MinSize      *float64 `yaml:"min_size"` // contracts
 	} `yaml:"quote"`
+	Screen *struct {
+		MinWindowNotional *float64 `yaml:"min_window_notional"`
+		MaxWindowNotional *float64 `yaml:"max_window_notional"`
+		MinTopQuoterShare *float64 `yaml:"min_top_quoter_share"`
+		MinSpreadBps      *float64 `yaml:"min_spread_bps"`
+	} `yaml:"screen"`
 	BadMaker *struct {
 		WindowDays        *int     `yaml:"window_days"`
 		MinQuotedShare    *float64 `yaml:"min_quoted_share"`
@@ -262,6 +273,32 @@ func ParseConfig(data []byte) (Config, error) {
 			return Config{}, fmt.Errorf("series_windows %s: window must be between window (%v) and 2h", sw.Prefix, c.Window)
 		}
 		c.SeriesWindows = append(c.SeriesWindows, SeriesWindow{Prefix: sw.Prefix, Window: v})
+	}
+	if sc := f.Screen; sc != nil {
+		r := &c.Screen
+		for _, v := range []struct {
+			name string
+			src  *float64
+			dst  *float64
+		}{
+			{"min_window_notional", sc.MinWindowNotional, &r.MinWindowNotional},
+			{"max_window_notional", sc.MaxWindowNotional, &r.MaxWindowNotional},
+			{"min_top_quoter_share", sc.MinTopQuoterShare, &r.MinTopQuoterShare},
+			{"min_spread_bps", sc.MinSpreadBps, &r.MinSpreadBps},
+		} {
+			if v.src != nil {
+				if *v.src < 0 {
+					return Config{}, fmt.Errorf("screen.%s must not be negative", v.name)
+				}
+				*v.dst = *v.src
+			}
+		}
+		if r.MinTopQuoterShare > 1 {
+			return Config{}, errors.New("screen.min_top_quoter_share is a share, at most 1")
+		}
+		if r.MaxWindowNotional < r.MinWindowNotional {
+			return Config{}, errors.New("screen.max_window_notional is below min_window_notional")
+		}
 	}
 	if q := f.Quote; q != nil {
 		if q.MaxSpreadBps != nil {

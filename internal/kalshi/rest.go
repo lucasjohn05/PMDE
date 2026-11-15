@@ -565,6 +565,11 @@ type Candle struct {
 	AskOpen, AskClose int
 	HasBid, HasAsk    bool  // the side's open and close both parsed
 	VolumeCenti       int64 // contracts traded in the period
+
+	// MeanBps is the period's mean traded yes price (price.mean); valid
+	// only if HasMean (no trades, no mean).
+	MeanBps int
+	HasMean bool
 }
 
 // TwoSided reports whether the candle closed with a real bid and ask.
@@ -623,6 +628,10 @@ type candleWire struct {
 	YesAsk      ohlcWire `json:"yes_ask"`
 	VolumeFP    string   `json:"volume_fp"`
 	Volume      string   `json:"volume"`
+	Price       struct {
+		MeanDollars *string `json:"mean_dollars"`
+		Mean        *string `json:"mean"`
+	} `json:"price"`
 }
 
 func decodeCandles(ws []candleWire) []Candle {
@@ -636,6 +645,13 @@ func decodeCandles(ws []candleWire) []Candle {
 			vol = w.Volume
 		}
 		c.VolumeCenti, _ = parseFixedPoint(vol, 2)
+		mean := w.Price.MeanDollars
+		if mean == nil {
+			mean = w.Price.Mean
+		}
+		if mean != nil {
+			c.MeanBps, c.HasMean = parseBps(*mean)
+		}
 		candles = append(candles, c)
 	}
 	slices.SortFunc(candles, func(a, b Candle) int { return int(a.End - b.End) })

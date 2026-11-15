@@ -2,6 +2,7 @@ package kalshi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -33,7 +34,7 @@ func testREST(t *testing.T, h http.HandlerFunc) (*REST, *[]time.Duration) {
 
 // The market JSON is trimmed from live responses (November 2026).
 const settledMarket = `{"ticker":"KXHIGHNY-26NOV11-T66","event_ticker":"KXHIGHNY-26NOV11","status":"finalized",
-"result":"no","yes_sub_title":"67° or above","strike_type":"greater","floor_strike":66,
+"result":"no","yes_sub_title":"67Â° or above","strike_type":"greater","floor_strike":66,
 "open_time":"2026-11-10T15:00:00Z","close_time":"2026-11-12T06:00:00Z",
 "settlement_ts":"2026-11-12T12:09:25.276474Z","settlement_value_dollars":"0.0000","volume_fp":"7078.05"}`
 
@@ -64,7 +65,7 @@ func TestMarketsPaginatesAndDecodes(t *testing.T) {
 	}
 	m := got[0]
 	if m.Ticker != "KXHIGHNY-26NOV11-T66" || m.Event != "KXHIGHNY-26NOV11" || m.Status != "finalized" ||
-		m.Result != "no" || m.Rung != "67° or above" || m.StrikeType != "greater" ||
+		m.Result != "no" || m.Rung != "67Â° or above" || m.StrikeType != "greater" ||
 		m.FloorStrike != "66" || m.CapStrike != "" {
 		t.Errorf("settled market decoded as %+v", m)
 	}
@@ -339,5 +340,21 @@ func TestBatchCandlesticks(t *testing.T) {
 	}
 	if _, err := r.BatchCandlesticks(context.Background(), make([]string, 101), from, from, 1); err == nil {
 		t.Errorf("no error for 101 tickers")
+	}
+}
+
+// The candle's mean traded price is read from either endpoint's shape,
+// and is absent when the period had no trades.
+func TestDecodeCandleMean(t *testing.T) {
+	var ws []candleWire
+	body := `[{"end_period_ts":60,"volume_fp":"3.00","price":{"mean_dollars":"0.4346"},"yes_bid":{},"yes_ask":{}},
+{"end_period_ts":120,"volume":"1.00","price":{"mean":"0.5100"},"yes_bid":{},"yes_ask":{}},
+{"end_period_ts":180,"volume":"0.00","price":{"mean":null},"yes_bid":{},"yes_ask":{}}]`
+	if err := json.Unmarshal([]byte(body), &ws); err != nil {
+		t.Fatal(err)
+	}
+	cs := decodeCandles(ws)
+	if !cs[0].HasMean || cs[0].MeanBps != 4346 || !cs[1].HasMean || cs[1].MeanBps != 5100 || cs[2].HasMean {
+		t.Errorf("%+v", cs)
 	}
 }

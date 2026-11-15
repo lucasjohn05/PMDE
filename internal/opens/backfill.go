@@ -83,6 +83,12 @@ type OpenRow struct {
 	LifeNotional   *int64 `json:"life_notional_cents,omitempty"`
 	LifeTruncated  bool   `json:"life_truncated,omitempty"`
 
+	// NotionalFromCandles marks a triage row whose WindowNotional is an
+	// estimate from 1-minute candles: volume times the mean traded yes
+	// price, not the taker's price, over the whole minutes inside the
+	// window. Backfill rows never set it.
+	NotionalFromCandles bool `json:"notional_from_candles,omitempty"`
+
 	// The first trade within the horizon after the open, if any.
 	TradeMs    int64  `json:"trade_ms,omitempty"`
 	TradePrice *int   `json:"trade_price,omitempty"`

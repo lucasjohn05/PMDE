@@ -244,6 +244,17 @@ quote:
   max_spread_bps: 1000
   min_size: 10
 
+# The screening band (pmde-opens report and triage): a series is a
+# "candidate" when its window notional is within these dollars per day,
+# its largest quoter holds at least this share of quoted size, and its
+# median opening spread is at least this wide. Separate from bad_maker
+# below. See docs/open-scanner.md, "The screening band".
+screen:
+  min_window_notional: 1000
+  max_window_notional: 50000
+  min_top_quoter_share: 0.7
+  min_spread_bps: 300
+
 # When pmde-opens badmakers (run daily after the backfill) flags a series
 # as a bad-maker candidate, over the trailing window_days: a qualifying
 # quote on at least min_quoted_share of captured opens; median daily

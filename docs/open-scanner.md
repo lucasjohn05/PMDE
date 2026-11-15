@@ -349,6 +349,7 @@ passes 200,000 markets is counted on what was listed (marked `+`).
 | `lead` | `5s` | Subscribe this long before `open_time`. |
 | `window` | `60s` | Record until this long after `open_time`. |
 | `series_windows` | none | `{prefix, window}` entries: series whose ticker starts with `prefix` record for `window` (at least `window`, at most 2h; the longest prefix wins). Only the recording; grouping and the backfill's flow window use `window`. |
+| `screen.*` | see "The screening band" | `min_window_notional` 1000, `max_window_notional` 50000 (dollars a day), `min_top_quoter_share` 0.7, `min_spread_bps` 300. |
 | `max_concurrent` | 50 | Captures at once. One capture is one connection, covering one event's rungs. |
 | `market_poll` | `1m` | Poll interval for the watched series' unopened markets. |
 | `series_poll` | `15m` | Poll interval for the series list. |
@@ -569,6 +570,31 @@ ways:
 
 Read the count as "how many distinct scripted quotes", not "how many
 firms".
+
+## The screening band
+
+`pmde-opens report` and `pmde-opens triage` flag a series as a
+**candidate** when all three hold:
+
+| condition | default (`opens.yaml` `screen:`) | why |
+|---|---|---|
+| window notional per day within `[min_window_notional, max_window_notional]` | $1,000 to $50,000 | enough flow at the open to matter, not so much it is crowded |
+| largest quoter's share of quoted size >= `min_top_quoter_share` | 70% | one maker to compete with |
+| median opening spread >= `min_spread_bps` | 300 bps | room inside the spread |
+
+A condition that cannot be judged (no notional yet, a series never
+captured, no quotes) makes the series unknown, never a candidate: the
+`screen` column shows what failed (`$`, `q`, `sp`) and what is unknown
+(`?: quoters`). The report prints the candidates under its table.
+
+In triage the window notional is exact where the backfill has rows for
+the series, and otherwise an estimate from the sampled 1-minute candles
+(volume times the mean traded yes price, whole minutes, marked `≈`);
+quoters come from the captures on file. So in triage only series the
+scanner has captured can be candidates.
+
+This is a screen for where to look, not evidence that a quote is wrong;
+that is the bad-maker alert's job, with its own criteria.
 
 ## Quote staleness: not built
 

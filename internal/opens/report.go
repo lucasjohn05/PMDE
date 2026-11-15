@@ -126,6 +126,9 @@ type SeriesReport struct {
 	Quoters    Quoters
 	HasQuoters bool
 
+	// Screen is the screening band's verdict (Options.Screen).
+	Screen Screen
+
 	// Wing is the calibration of the wing rungs (opening mid under 10c
 	// or over 90c).
 	Wing WingCal
@@ -256,6 +259,9 @@ type Options struct {
 	// Quoters is LoadQuoters' estimate per series, over the same period
 	// as the rows. Nil leaves the quoter columns blank.
 	Quoters map[string]Quoters
+
+	// Screen is the screening band. Zero means DefaultScreenRule.
+	Screen ScreenRule
 }
 
 // DefaultResamples is enough for a 90% interval that is stable to a few
@@ -419,6 +425,11 @@ func seriesReport(series string, rows []OpenRow, opts Options) SeriesReport {
 	if q, ok := opts.Quoters[series]; ok && q.Placements > 0 {
 		rep.Quoters, rep.HasQuoters = q, true
 	}
+	rule := opts.Screen
+	if rule == (ScreenRule{}) {
+		rule = DefaultScreenRule()
+	}
+	rep.Screen = screenReport(rep, rule)
 	return rep
 }
 

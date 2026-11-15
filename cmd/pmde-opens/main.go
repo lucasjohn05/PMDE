@@ -150,9 +150,12 @@ func report(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote, Quoters: quoters})
+	reps := opens.Report(rows, opens.Options{MinOpens: *minOpens, Seed: *seed, Resamples: *resamples, Fees: fees, Rule: cfg.Quote, Quoters: quoters, Screen: cfg.Screen})
 	noteFees(fees, reps)
 	if err := opens.WriteText(os.Stdout, reps, *deciles); err != nil {
+		log.Fatal(err)
+	}
+	if err := opens.WriteCandidates(os.Stdout, reps, cfg.Screen); err != nil {
 		log.Fatal(err)
 	}
 	if *csvPath == "-" {
@@ -366,6 +369,8 @@ func triage(args []string) {
 		Horizon:      *horizon,
 		SampleEvents: *sample,
 		Rule:         cfg.Quote,
+		Screen:       cfg.Screen,
+		WindowFor:    cfg.WindowFor,
 		Logf:         log.Printf,
 	}
 	rows, runErr := t.Run(ctx)

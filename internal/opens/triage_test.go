@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -168,7 +169,7 @@ func TestTriage(t *testing.T) {
 	if err != nil || len(fake.batches) != before {
 		t.Fatalf("rerun: %d new batch requests, err %v", len(fake.batches)-before, err)
 	}
-	if again[0] != rows[0] || again[1] != rows[1] {
+	if !reflect.DeepEqual(again[0], rows[0]) || !reflect.DeepEqual(again[1], rows[1]) {
 		t.Errorf("rerun differs: %+v vs %+v", again[0], rows[0])
 	}
 
