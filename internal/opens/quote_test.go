@@ -184,6 +184,16 @@ func TestRepoOpensConfig(t *testing.T) {
 	if c.Quote != DefaultQuoteRule() || len(c.Series) == 0 {
 		t.Errorf("opens.yaml: quote %+v, %d series", c.Quote, len(c.Series))
 	}
+	// The hourly temperature series record for 30m; the cap covers the
+	// worst modelled 15:00Z burst (158 captures).
+	for _, s := range []string{"KXTEMPNYCHS", "KXTEMPCHIHS", "KXTEMPLAXHS", "KXTEMPMIAH"} {
+		if w := c.WindowFor(s); w != 30*time.Minute {
+			t.Errorf("opens.yaml: %s window %s, want 30m", s, w)
+		}
+	}
+	if c.MaxConcurrent < 158 {
+		t.Errorf("opens.yaml: max_concurrent %d is under the modelled worst case 158", c.MaxConcurrent)
+	}
 }
 
 // The opening quote's size is followed through the window: what left

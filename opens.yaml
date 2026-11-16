@@ -121,6 +121,15 @@ series:
   - KXTRUTHSOCIALD
   - KXUSDJPY
   - KXWTI
+  # Hourly temperature, four cities (added 2026-11-16 for the maker/flow
+  # study). One 10-rung event per series per hour: opens at HH:00Z, closes
+  # at HH+1:00Z, settles on Synoptic Data's reading per Kalshi's weather
+  # index. Recorded for 30m (series_windows): 4 connections from every
+  # top of the hour to half past.
+  - KXTEMPNYCHS
+  - KXTEMPCHIHS
+  - KXTEMPLAXHS
+  - KXTEMPMIAH
 
 # Backfilled and reported on, but not captured: series that passed the
 # 2026-11-13 triage at 50% only on 1c/99c stub books (median opening
@@ -211,6 +220,10 @@ window: 60s
 # well under max_concurrent.
 series_windows:
   - {prefix: KXAAAGASCD, window: 30m}
+  - {prefix: KXTEMPNYCHS, window: 30m}
+  - {prefix: KXTEMPCHIHS, window: 30m}
+  - {prefix: KXTEMPLAXHS, window: 30m}
+  - {prefix: KXTEMPMIAH, window: 30m}
 
 # Captures running at once. A capture is one websocket connection
 # covering all the rungs of one event that open together. An event past
@@ -227,7 +240,16 @@ series_windows:
 # ladder and the 50 state bucket markets, 51 captures (the bucket ones
 # held 30m), 55 connections with pmde's 4. It fits; the cap was not
 # raised.
-max_concurrent: 100
+#
+# Raised to 160 on 2026-11-16, for the four hourly temperature series
+# (4 more captures at every top of the hour, held 30m). Measured from
+# captures.jsonl: the 15:00Z burst ran 50 (11-13), 100 (11-14: 48 weather,
+# 49 new *STATELEG series, FX) and 54 (11-15) at once. 11-14 was exactly
+# at the old cap; adding 4 would have skipped whole events. 13:00Z peaks
+# at 51 (gas). Worst case at 15:00Z: 48 weather + 6 others + 4 hourly temp
+# + up to 100 new series (max_new_series) = 158. 160 covers that; 160 +
+# pmde's 4 = 164 of Kalshi's 200. Memory was 26 MB at 50 captures.
+max_concurrent: 160
 
 # How often to poll the watched series' unopened markets, and the
 # series list.
